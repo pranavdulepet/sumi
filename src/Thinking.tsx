@@ -1,6 +1,7 @@
 import {useState} from 'react';
 import {type Action, type Row, call} from './api';
 import {Models} from './Models';
+import {Stroke} from './Ink';
 import {Providers} from './Providers';
 
 function PlanButton({
@@ -79,11 +80,15 @@ export function Think({
         call('models'),
         call('fit'),
       ]);
-      const installed = models
-        .filter(m => !m.bytes || m.bytes * 1.4 + 3e9 < fit.memory)
-        .sort((a, b) => b.bytes - a.bytes);
-      if (installed.length) {
-        await act('model', installed[0]);
+      const installed = models.filter(
+        m => !m.bytes || m.bytes * 2 + 4e9 < fit.memory,
+      );
+      const choice =
+        installed.find(m => m.name === fit.recommendation?.name) ??
+        installed.find(m => m.name === 'llama3.2:3b') ??
+        installed[0];
+      if (choice) {
+        await act('model', choice);
         confirm('Ready to think on this Mac.');
       } else {
         chooseLocal(true);
@@ -126,15 +131,19 @@ export function Think({
       </>
     );
   return (
-    <>
-      <h1>How Sumi thinks.</h1>
-      <p className="lede">
-        Your notebook stays on this Mac. Sumi thinks with your ChatGPT plan.
-      </p>
-      <p className="small">
-        OpenAI receives the passages Sumi uses to read, predict, and finish your
-        writing.
-      </p>
+    <section className="think-page" aria-label="How Sumi thinks">
+      <Stroke className="think-mark" points={data.mark} />
+      <div className="think-copy">
+        <h1>
+          Your notebook stays on this Mac.
+          <br />
+          Sumi thinks with your ChatGPT plan.
+        </h1>
+        <p className="small">
+          OpenAI receives the passages Sumi uses. You can change this in
+          Settings.
+        </p>
+      </div>
       <div className="think-actions">
         {!busy && (
           <PlanButton
@@ -148,7 +157,7 @@ export function Think({
         </button>
       </div>
       {error && <p role="alert">{error}</p>}
-    </>
+    </section>
   );
 }
 

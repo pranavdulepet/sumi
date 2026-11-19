@@ -640,7 +640,19 @@ input[type='range']::-webkit-slider-thumb {
   gap: 12px;
   margin-top: 24px;
 }
-.stage-1 h1 {
-  font-size: 32px;
-  letter-spacing: normal;
+body:has(.think-page) header span { visibility: hidden; }
+.welcome:has(.think-page) {
+  width: min(740px, calc(100% - 80px));
+  max-width: none;
+  margin-top: clamp(52px, 14vh, 126px);
+}
+.think-page { margin: 0; }
+.think-mark { display: block; width: 80px; height: 50px; color: var(--seal, #a33a32); }
+.think-copy { display: grid; grid-template-columns: minmax(0, 1fr) 12em; gap: 28px; align-items: center; margin-top: 20px; }
+.think-copy h1 { font: 23px/1.6 var(--serif); letter-spacing: normal; margin: 0; }
+.think-copy .small { margin: 0; padding-left: 13px; border-left: 1px solid var(--line); }
+.think-actions .primary { background: transparent; border: 1px solid var(--ink); color: var(--ink); }
+@media (max-width: 650px) {
+  .think-copy { grid-template-columns: 1fr; gap: 12px; }
+  .think-copy .small { max-width: 28em; }
 }

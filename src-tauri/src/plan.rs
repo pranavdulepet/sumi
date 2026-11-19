@@ -438,6 +438,13 @@ mod tests {
                 "{job}: {routes:?}"
             );
         }
+        let budget = format!("budget/{}/ChatGPT", chrono::Utc::now().format("%Y-%m"));
+        s.set(&budget, &json!(MONTHLY_LIMIT)).unwrap();
+        assert!(
+            think(&s, &model, "prediction", "Reply", &json!("text"), 12, None)
+                .unwrap_err()
+                .contains("cap reached")
+        );
         s.set("model", &Value::Null).unwrap();
         assert!(think(&s, &model, "prediction", "Reply", &json!("text"), 12, None).is_err());
         running.store(false, Ordering::SeqCst);

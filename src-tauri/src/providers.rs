@@ -109,10 +109,6 @@ pub fn disconnect(s: &Store, k: &str) -> Res<()> {
         _ => {}
     }
     s.del("provider", k)?;
-    if k == "ChatGPT" {
-        // The next sign-in can register a different account after an explicit disconnect.
-        s.set("planRegistration", &Value::Null)?;
-    }
     if revocation.is_some_and(|r| r.is_err()) {
         return Err(
             "Disconnected on this Mac. Open ChatGPT Settings to confirm you removed Sumi’s access."
@@ -469,15 +465,8 @@ pub fn oauth(s: &Store, kind: &str, primary: bool) -> Res<Value> {
         host = json!(format!("urn:uuid:{}", uuid::Uuid::new_v4()));
         s.set("hostId", &host)?;
     }
-    let previous = credential(s, kind).ok().or_else(|| {
-        if plan {
-            s.get("planRegistration")
-                .ok()
-                .filter(|r| r["client"].is_string())
-        } else {
-            None
-        }
-    });
+    let previous = credential(s, kind).ok();
+    let original_model = s.get("model")?;
     let registered = previous.as_ref().and_then(|p| p["client"].as_str());
     let mut url = url::Url::parse(if plan {
         "https://auth.openai.com/api/accounts/authorize"
@@ -573,10 +562,6 @@ pub fn oauth(s: &Store, kind: &str, primary: bool) -> Res<Value> {
             t["expires"] =
                 json!(chrono::Utc::now().timestamp() + t["expires_in"].as_i64().unwrap_or(0));
             let _lock = plan_lock(s)?;
-            s.set(
-                "planRegistration",
-                &json!({"client":client,"subject":claims["sub"]}),
-            )?;
             let model = if primary {
                 Some(crate::plan::verify_connection(
                     s,
@@ -587,6 +572,12 @@ pub fn oauth(s: &Store, kind: &str, primary: bool) -> Res<Value> {
             } else {
                 None
             };
+            if primary && s.get("model")? != original_model {
+                return Err(
+                    "Your thinking setting changed during sign-in. Try again to use ChatGPT."
+                        .into(),
+                );
+            }
             vault(s, kind, &t)?;
             if let Some(model) = model {
                 let current = s.get("model")?;

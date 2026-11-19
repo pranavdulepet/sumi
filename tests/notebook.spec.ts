@@ -41,8 +41,20 @@ async function fixtureNotebook(
   );
   const pending: ((s: string) => void)[] = [];
   createInterface({input: core.stdout}).on('line', s => pending.shift()?.(s));
+  let stopped = '';
+  function stop(reason: string) {
+    stopped = reason;
+    for (const finish of pending.splice(0))
+      finish(JSON.stringify({error: reason}));
+  }
+  core.once('error', e => stop(e.message));
+  core.stdin.on('error', e => stop(e.message));
+  core.once('close', (code, signal) =>
+    stop('Notebook fixture closed (' + (signal || code) + ').'),
+  );
   function rpc(op: string, args = {}) {
     return new Promise<any>((resolve, reject) => {
+      if (stopped) return reject(Error(stopped));
       pending.push(s => {
         const result = JSON.parse(s);
         if (result.error) reject(Error(result.error));
@@ -54,12 +66,22 @@ async function fixtureNotebook(
   return {core, rpc, folder};
 }
 
+// Exercise automatic discovery with a predictable installed model on the test Mac.
+function withTestModel(rpc: (op: string, args?: object) => Promise<any>) {
+  return async (op: string, args: object) => {
+    const result = await rpc(op, args);
+    return op === 'models'
+      ? result.filter((m: {name: string}) => m.name === 'llama3.2:3b')
+      : result;
+  };
+}
+
 test('brushstroke, real local prediction, correction, history and persisted sheets', async ({
   page,
 }, info) => {
   const {core, rpc, folder} = await fixtureNotebook();
   try {
-    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.exposeFunction('sumiTestIPC', withTestModel(rpc));
     await page.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = {
         transformCallback: () => 1,
@@ -194,7 +216,7 @@ test('first reading shows a recent reply and leaves older history for idle time'
         [1, 1],
       ],
     });
-    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.exposeFunction('sumiTestIPC', withTestModel(rpc));
     await page.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = {
         transformCallback: () => 1,
@@ -1149,7 +1171,7 @@ test('resume the publisher’s real GGUF download and seal a decision without an
     });
     await page.goto('/');
     await expect(
-      page.getByRole('heading', {name: 'How Sumi thinks.'}),
+      page.getByRole('heading', {name: /Your notebook stays/}),
     ).toBeVisible();
     await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
     await page.getByRole('button', {name: 'Resume Qwen 2.5 download'}).click();
@@ -1202,8 +1224,14 @@ test('the ChatGPT choice waits for a completed check and keeps advanced setup in
   try {
     await rpc('mark', {
       points: [
-        [0, 0],
-        [1, 1],
+        [0.1, 0.56],
+        [0.18, 0.43],
+        [0.28, 0.35],
+        [0.39, 0.36],
+        [0.52, 0.46],
+        [0.67, 0.59],
+        [0.78, 0.6],
+        [0.9, 0.48],
       ],
     });
     let attempts = 0;
