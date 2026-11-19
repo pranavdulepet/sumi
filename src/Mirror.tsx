@@ -309,7 +309,8 @@ export function Mirror({data, act}: {data: Row; act: Action}) {
           <p>Model recommendations updated {day(data.catalogUpdated)}.</p>
         )}
         <p className="small">
-          Local model · {data.model?.name || 'Unselected'}
+          {data.model?.runtime === 'ChatGPT' ? 'ChatGPT plan' : 'Local model'} ·{' '}
+          {data.model?.name || 'Unselected'}
         </p>
         {data.routes.map((r: Row) => (
           <p key={r.id}>

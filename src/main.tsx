@@ -14,6 +14,7 @@ import {Desk} from './Desk';
 import {Scroll} from './Scroll';
 import {Mirror} from './Mirror';
 import {Seal} from './Seal';
+import {ThinkingSettings} from './Thinking';
 import {Onboarding} from './Onboarding';
 import {Enso} from './Ink';
 import {call, places, type Action, type Row, type Place} from './api';
@@ -30,6 +31,7 @@ function Notebook() {
   const [data, update] = useState<Row | null>(null),
     [place, go] = useState<Place>('Desk'),
     [nav, menu] = useState(false),
+    [settings, showSettings] = useState(false),
     [focusWaiting, setFocusWaiting] = useState(false),
     [error, fail] = useState('');
   const queue = useRef(Promise.resolve()),
@@ -51,9 +53,14 @@ function Notebook() {
       await refresh();
       return result;
     } catch (e) {
-      if (op === 'disconnect' || op === 'connect' || op === 'surprise')
+      if (
+        op === 'disconnect' ||
+        op === 'connect' ||
+        op === 'forgetProvider' ||
+        op === 'surprise'
+      )
         await refresh().catch(() => {});
-      fail(String(e));
+      if (op !== 'connectPlan') fail(String(e));
       throw e;
     }
   };
@@ -63,6 +70,7 @@ function Notebook() {
     return p;
   }
   function navigate(p: Place, waiting = false) {
+    showSettings(false);
     setFocusWaiting(waiting);
     go(p);
     menu(false);
@@ -85,6 +93,7 @@ function Notebook() {
         const result = await record('enterDesk', {day: localDay(), shortcut});
         if (!live) return;
         if (shortcut || result?.newDay) {
+          showSettings(false);
           go('Desk');
           menu(false);
         }
@@ -129,6 +138,10 @@ function Notebook() {
           void act('enterDesk', {day: localDay(), shortcut: true})
             .then(() => navigate('Desk'))
             .catch(() => {});
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault();
+        menu(false);
+        showSettings(true);
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         menu(v => !v);
@@ -139,7 +152,10 @@ function Notebook() {
       ) {
         e.preventDefault();
         navigate(places[Number(e.key) - 1]);
-      } else if (e.key === 'Escape') menu(false);
+      } else if (e.key === 'Escape') {
+        menu(false);
+        showSettings(false);
+      }
     };
     window.addEventListener('keydown', f);
     return () => window.removeEventListener('keydown', f);
@@ -177,7 +193,13 @@ function Notebook() {
       ) : (
         <>
           <div key={place} className="unroll">
-            {place === 'Desk' ? (
+            {settings ? (
+              <ThinkingSettings
+                data={data}
+                act={act}
+                close={() => showSettings(false)}
+              />
+            ) : place === 'Desk' ? (
               <Desk
                 key={data.current}
                 data={data}
@@ -213,7 +235,15 @@ function Notebook() {
                     <small>⌘{i + 1}</small>
                   </button>
                 ))}
-                <span aria-hidden="true">墨</span>
+                <button
+                  className="ring-settings"
+                  onClick={() => {
+                    menu(false);
+                    showSettings(true);
+                  }}
+                >
+                  Settings<small>⌘,</small>
+                </button>
               </nav>
             </div>
           )}

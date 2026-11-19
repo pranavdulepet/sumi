@@ -80,7 +80,7 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     await page.mouse.move(box.x + 180, box.y + 90, {steps: 16});
     await page.mouse.up();
     await page.getByRole('button', {name: 'Keep my mark'}).click();
-    await page.getByRole('button', {name: /llama3.2:3b/}).click();
+    await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
     await page
       .getByRole('button', {name: 'Continue with a clean page'})
@@ -205,7 +205,7 @@ test('first reading shows a recent reply and leaves older history for idle time'
       };
     });
     await page.goto('/');
-    await page.getByRole('button', {name: /llama3.2:3b/}).click();
+    await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
     await page.getByRole('button', {name: 'Import chat export'}).click();
     await page.getByRole('button', {name: 'Begin the first reading'}).click();
@@ -1149,13 +1149,14 @@ test('resume the publisher’s real GGUF download and seal a decision without an
     });
     await page.goto('/');
     await expect(
-      page.getByRole('heading', {name: 'A mind for Sumi.'}),
+      page.getByRole('heading', {name: 'How Sumi thinks.'}),
     ).toBeVisible();
+    await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
     await page.getByRole('button', {name: 'Resume Qwen 2.5 download'}).click();
     await expect(
       page.getByRole('progressbar', {name: 'Qwen download'}),
     ).toBeVisible();
-    await expect(page.getByText('Ready for your notebook.')).toBeVisible({
+    await expect(page.getByText('Ready to think on this Mac.')).toBeVisible({
       timeout: 240000,
     });
     expect(steps).toContain(offset);
@@ -1191,5 +1192,89 @@ test('resume the publisher’s real GGUF download and seal a decision without an
       await closed(session.core);
     }
     await rm(first.folder, {recursive: true, force: true});
+  }
+});
+
+test('the ChatGPT choice waits for a completed check and keeps advanced setup in Settings', async ({
+  page,
+}, info) => {
+  const {rpc, core} = await fixtureNotebook();
+  try {
+    await rpc('mark', {
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    });
+    let attempts = 0;
+    let connected = false;
+    let finishCheck: (() => void) | undefined;
+    await page.exposeFunction('sumiTestIPC', async (op: string, args: any) => {
+      // Browser automation cannot consent on a person's OpenAI account.
+      // The native transport test checks the actual HTTP and streaming contract.
+      if (op === 'connectPlan') {
+        if (++attempts === 1) throw Error('Sign-in was cancelled.');
+        await new Promise<void>(resolve => {
+          finishCheck = resolve;
+        });
+        connected = true;
+        return true;
+      }
+      const value = await rpc(op, args);
+      if (op === 'state' && connected)
+        return {
+          ...value,
+          model: {runtime: 'ChatGPT', name: 'plan-test'},
+          providers: [{id: 'ChatGPT', primary: true}],
+        };
+      return value;
+    });
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    const signIn = page.getByRole('button', {name: 'Continue with ChatGPT'});
+    await expect(signIn).toBeVisible();
+    await expect(
+      page.getByRole('button', {name: 'Think on this Mac instead'}),
+    ).toBeVisible();
+    await expect(page.getByRole('combobox')).toHaveCount(0);
+    await page.screenshot({path: info.outputPath('think.png')});
+    await signIn.click();
+    await expect(page.getByRole('alert')).toContainText('cancelled');
+    await signIn.click();
+    await expect(page.getByText('Waiting for ChatGPT…')).toBeVisible();
+    await expect(
+      page.getByRole('button', {name: 'Continue', exact: true}),
+    ).toHaveCount(0);
+    finishCheck!();
+    await expect(page.getByRole('status')).toHaveText(
+      'Connected to your ChatGPT plan.',
+    );
+    await page.getByRole('button', {name: 'Continue', exact: true}).click();
+    await page
+      .getByRole('button', {name: 'Continue with a clean page'})
+      .click();
+    await page.getByRole('button', {name: 'Open the Desk'}).click();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    await page.keyboard.press('Meta+,');
+    await expect(
+      page.getByRole('heading', {name: 'Settings', exact: true}),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', {name: 'Disconnect ChatGPT'}),
+    ).toBeVisible();
+    await page.getByText('Optional providers', {exact: true}).click();
+    await expect(page.getByRole('combobox')).toBeVisible();
+    await page.getByRole('button', {name: 'Done'}).click();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+  } finally {
+    core.stdin.end();
   }
 });

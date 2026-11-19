@@ -6,6 +6,7 @@ export function useGhostInk(
   sheet: string,
   sealed: boolean,
   record: Action,
+  hosted: boolean,
 ) {
   const field = useRef<HTMLTextAreaElement>(null);
   const [ready, setReady] = useState(false);
@@ -117,28 +118,31 @@ export function useGhostInk(
     )
       return;
     let live = true;
-    const timeout = setTimeout(() => {
-      // Coalesce edits made while an earlier local inference is running.
-      requests.current = requests.current
-        .then(async () => {
-          if (!live || !atEnd()) return;
-          const c = await call('ghost', {text});
-          if (
-            live &&
-            c &&
-            atEnd() &&
-            field.current?.value === text &&
-            suppressed.current !== text
-          )
-            show({...c, prefix: text});
-        })
-        .catch(() => {});
-    }, 180);
+    const timeout = setTimeout(
+      () => {
+        // Coalesce edits made while an earlier suggestion is being written.
+        requests.current = requests.current
+          .then(async () => {
+            if (!live || !atEnd()) return;
+            const c = await call('ghost', {text});
+            if (
+              live &&
+              c &&
+              atEnd() &&
+              field.current?.value === text &&
+              suppressed.current !== text
+            )
+              show({...c, prefix: text});
+          })
+          .catch(() => {});
+      },
+      hosted ? 900 : 180,
+    );
     return () => {
       live = false;
       clearTimeout(timeout);
     };
-  }, [text, sheet, ready, sealed, revision]);
+  }, [text, sheet, ready, sealed, revision, hosted]);
   useEffect(() => {
     if (sealed) hide();
   }, [sealed]);

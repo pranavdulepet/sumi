@@ -8,7 +8,9 @@ Sumi is a private notebook for Apple Silicon Macs running macOS 14 or later. It 
 
 Download **Sumi-macOS.zip** from the [latest release](https://github.com/pranavdulepet/sumi/releases/latest), unzip it, and move Sumi to Applications. Move the app to its lasting location before connecting agents. This build uses an ad-hoc signature. A rebuilt copy may trigger macOS Keychain authorization for the existing notebook. The release has no Apple notarization ticket.
 
-Draw a mark or choose the keyboard-accessible stroke. Pick an installed local model, supply a GGUF file, or allow the bundled runtime to download its listed model. A clean notebook works without model weights. Each conversation source asks for your permission. You can skip imports entirely.
+Draw your mark, then choose **Continue with ChatGPT**. Your notebook stays on this Mac. OpenAI receives the passages used for predictions, writing suggestions, grading and readings. Sumi asks your eligible ChatGPT plan to answer a short connection check before setup continues. You choose which conversations Sumi may read.
+
+Choose **Think on this Mac instead** for local thinking. Sumi checks an installed model or offers a local download. Open **Settings** with ⌘, to switch later, disconnect ChatGPT or manage other model connections.
 
 You can close the window during the first reading. If you quit the app, opening the notebook resumes the reading and keeps replies already scored.
 

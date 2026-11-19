@@ -631,3 +631,16 @@ input[type='range']::-webkit-slider-thumb {
   height: .3rem;
   accent-color: var(--ink);
 }
+
+.ring .ring-settings { position: static; }
+
+.think-actions {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  margin-top: 24px;
+}
+.stage-1 h1 {
+  font-size: 32px;
+  letter-spacing: normal;
+}

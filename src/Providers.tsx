@@ -27,16 +27,14 @@ export function Providers({data, act}: {data: Row; act: Action}) {
     <details>
       <summary>Optional providers</summary>
       <p className="small">
-        Local writing stays on this Mac. You can allow cleaned excerpts to reach
-        a provider during idle reflection. A zero request allowance keeps it
-        off.
+        These connections can help with background readings when Sumi is
+        thinking on this Mac.
       </p>
       <label>
         Provider
         <select value={kind} onChange={e => choose(e.target.value)}>
           {[
             'OpenRouter',
-            'ChatGPT',
             'OpenAI',
             'Anthropic',
             'Gemini',
@@ -47,7 +45,7 @@ export function Providers({data, act}: {data: Row; act: Action}) {
           ))}
         </select>
       </label>
-      {['OpenRouter', 'ChatGPT'].includes(kind) && (
+      {kind === 'OpenRouter' && (
         <button
           disabled={busy}
           onClick={async () => {
@@ -60,30 +58,23 @@ export function Providers({data, act}: {data: Row; act: Action}) {
             }
           }}
         >
-          {busy
-            ? 'Waiting for sign-in…'
-            : kind === 'ChatGPT'
-              ? 'Continue with ChatGPT'
-              : 'Connect OpenRouter'}{' '}
-          ↗
+          {busy ? 'Waiting for sign-in…' : 'Connect OpenRouter'} ↗
         </button>
       )}
-      {kind !== 'ChatGPT' && (
-        <label>
-          API key
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={
-              data.providers.some((r: Row) => r.id === kind)
-                ? 'Saved in Keychain'
-                : 'Stored in macOS Keychain'
-            }
-            value={secret}
-            onChange={e => setSecret(e.target.value)}
-          />
-        </label>
-      )}
+      <label>
+        API key
+        <input
+          type="password"
+          autoComplete="off"
+          placeholder={
+            data.providers.some((r: Row) => r.id === kind)
+              ? 'Saved in Keychain'
+              : 'Stored in macOS Keychain'
+          }
+          value={secret}
+          onChange={e => setSecret(e.target.value)}
+        />
+      </label>
       {kind === 'Compatible' && (
         <label>
           HTTPS API base URL

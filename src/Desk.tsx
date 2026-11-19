@@ -29,7 +29,13 @@ export function Desk({
     [breakOpen, open] = useState(false);
   const rev = useRef(0);
   const sealed = data.sealed;
-  const ink = useGhostInk(text, data.current, !!sealed, record);
+  const ink = useGhostInk(
+    text,
+    data.current,
+    !!sealed,
+    record,
+    data.model?.runtime === 'ChatGPT',
+  );
   const {field, ghost} = ink;
   const waiting: Row[] = data.log.filter((v: Row) => v.status === 'waiting');
   const names = [...new Set(waiting.map(v => v.name).filter(Boolean))];

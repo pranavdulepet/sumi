@@ -1,7 +1,6 @@
-import {Providers} from './Providers';
 import {useState} from 'react';
 import {type Row, type Action, sections, day} from './api';
-import {Models, Sources} from './Onboarding';
+import {Sources} from './Onboarding';
 function AnswerReviews({
   agent,
   log,
@@ -378,21 +377,6 @@ export function Seal({
             {busy ? 'Reading…' : 'Read selected sources'}
           </button>
         </details>
-        <details>
-          <summary>Local intelligence</summary>
-          <Models model={data.model} act={act} />
-          {data.catalogConfigured && (
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={!data.catalogOff}
-                onChange={e => act('catalogOff', {value: !e.target.checked})}
-              />
-              Check for model updates weekly
-            </label>
-          )}
-        </details>
-        <Providers data={data} act={act} />
         <details>
           <summary>Learning preferences</summary>
           <label className="check">
