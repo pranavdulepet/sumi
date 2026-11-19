@@ -11,6 +11,7 @@ mod jobs;
 mod local;
 mod mirror;
 mod models;
+mod plan;
 mod providers;
 mod scroll;
 mod seal;

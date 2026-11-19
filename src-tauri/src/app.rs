@@ -76,7 +76,7 @@ pub fn state(s: &Store) -> Res<Value> {
     let mut surprises = crate::mirror::reviews(&scores, &entries, chrono::Utc::now());
     surprises.truncate(3);
     Ok(
-        json!({"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
+        json!({"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"planUsage":s.get(&format!("budget/{}/ChatGPT",chrono::Utc::now().format("%Y-%m")))?, "providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
     )
 }
 pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
@@ -97,7 +97,8 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             crate::providers::disconnect(s, text(a, "provider")?)?;
             Ok(Value::Null)
         }
-        "oauth" => crate::providers::oauth(s, text(a, "provider")?),
+        "oauth" => crate::providers::oauth(s, text(a, "provider")?, false),
+        "connectPlan" => crate::providers::oauth(s, "ChatGPT", true),
         "models" => Ok(json!(models::inventory())),
         "downloadBundled" => crate::weights::download(s),
         "modelDownloadStatus" => Ok(crate::weights::status(s)),
@@ -250,8 +251,8 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             }
             let q = sources::audit(&question).ok_or("This passage stays on the sheet.")?;
             let model = s.get("model")?;
-            let support = engine::select_rules(s, &q, scroll::approved(s)?);
-            let guess = engine::predict_ranked(&model, &q, &support, crate::jobs::prompt(s))?;
+            let support = engine::select_rules(s, &model, &q, scroll::approved(s)?);
+            let guess = engine::predict_ranked(s, &model, &q, &support, crate::jobs::prompt(s))?;
             let v = json!({"ruleRevisions":crate::mirror::rule_revisions(&support),"ruleIds":support.iter().map(|r|r["id"].clone()).collect::<Vec<_>>(),"sources":support.iter().flat_map(|r|r["sources"].as_array().into_iter().flatten()).collect::<Vec<_>>(),"id":id(),"sheet":k,"question":q,"guess":guess,"date":now(),"model":model["name"],"actual":null});
             s.put("sealed", &v)?;
             Ok(json!({"id":v["id"]}))
@@ -380,6 +381,13 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
                 return Err("Couldn’t open the export page.".into());
             }
             crate::exports::request(s)
+        }
+        "planUsageSettings" => {
+            std::process::Command::new("/usr/bin/open")
+                .arg("https://chatgpt.com/settings/usage")
+                .spawn()
+                .msg()?;
+            Ok(Value::Null)
         }
         "openFolder" => {
             std::process::Command::new("/usr/bin/open")

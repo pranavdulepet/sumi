@@ -121,10 +121,10 @@ pub fn call(s: &Store, token: &str, name: &str, args: &Value) -> Res<Value> {
     let result = match name {
         "sumi_context" => json!({"entries":shared_rules(engine::rank(scoped(s,&a)?,&q))}),
         "sumi_predict" if p != "Read" => {
-            let entries = shared_rules(engine::select_rules(s, &q, scoped(s, &a)?));
             let model = s.get("model")?;
+            let entries = shared_rules(engine::select_rules(s, &model, &q, scoped(s, &a)?));
             let guess = if args["options"].is_null() {
-                engine::predict_ranked(&model, &q, &entries, crate::jobs::prompt(s))?
+                engine::predict_ranked(s, &model, &q, &entries, crate::jobs::prompt(s))?
             } else {
                 let choices = args["options"]
                     .as_array()
@@ -140,10 +140,12 @@ pub fn call(s: &Store, token: &str, name: &str, args: &Value) -> Res<Value> {
                     }
                 }
                 let schema = json!({"type":"object","properties":{"choice":{"type":"string","enum":choices}},"required":["choice"],"additionalProperties":false});
-                let raw = crate::models::infer_with(
+                let raw = crate::plan::think(
+                    s,
                     &model,
+                    "agent prediction",
                     crate::jobs::prompt(s),
-                    &json!({"situation":q,"rules":entries,"options":choices}).to_string(),
+                    &json!({"situation":q,"rules":entries,"options":choices}),
                     120,
                     Some(&schema),
                 )?;

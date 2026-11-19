@@ -1,4 +1,4 @@
-use crate::{engine, local, models, scroll, sources, store::*};
+use crate::{engine, local, plan, scroll, sources, store::*};
 use notify::{RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use std::{
@@ -129,7 +129,7 @@ pub fn tune(s: &Store) -> Res<()> {
     let mut totals = [0u32; 3];
     let mut n = 0;
     let versions = s.list("version")?;
-    for v in moments {
+    for v in moments.into_iter().filter(|r| plan::usable(&m, r)) {
         if !local::idle() {
             return Ok(());
         }
@@ -148,16 +148,19 @@ pub fn tune(s: &Store) -> Res<()> {
             }
             let selected = rules
                 .iter()
+                .filter(|r| plan::usable(&m, r))
                 .take(*limit)
                 .map(|r| &r["text"])
                 .collect::<Vec<_>>();
-            let input = json!({"situation":q,"rules":selected}).to_string();
-            let cache_key = (*style, input.clone());
+            let input = json!({"situation":q,"rules":selected});
+            let cache_key = (*style, input.to_string());
             let score = if let Some(v) = predictions.get(&cache_key) {
                 *v
             } else {
-                let guess = models::infer(
+                let guess = plan::think(
+                    s,
                     &m,
+                    "tuning",
                     if *style == "concise" {
                         DIRECT
                     } else {
@@ -165,11 +168,12 @@ pub fn tune(s: &Store) -> Res<()> {
                     },
                     &input,
                     72,
+                    None,
                 )?;
                 if !local::idle() {
                     return Ok(());
                 }
-                let score = engine::grade(&m, q, &guess, actual)?;
+                let score = engine::grade(s, &m, q, &guess, actual)?;
                 predictions.insert(cache_key, score);
                 score
             };

@@ -1,4 +1,4 @@
-use crate::{engine, models, scroll, sources, store::*};
+use crate::{engine, plan, scroll, sources, store::*};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -70,7 +70,17 @@ pub fn suggest(s: &Store, text: &str) -> Res<Value> {
     if rules.is_empty() || model.is_null() || required > 2 {
         return Ok(Value::Null);
     }
-    let examples = sources::nearby(s, &context)?;
+    let rules: Vec<_> = rules
+        .into_iter()
+        .filter(|r| plan::usable(&model, r))
+        .collect();
+    if rules.is_empty() {
+        return Ok(Value::Null);
+    }
+    let examples: Vec<_> = sources::nearby(s, &context)?
+        .into_iter()
+        .filter(|r| plan::usable(&model, r))
+        .collect();
     let mut origins: BTreeSet<String> = examples
         .iter()
         .filter_map(|r| r["source"].as_str().map(str::to_owned))
@@ -81,11 +91,14 @@ pub fn suggest(s: &Store, text: &str) -> Res<Value> {
             .flat_map(|r| r["sources"].as_array().into_iter().flatten())
             .filter_map(|v| v.as_str().map(str::to_owned)),
     );
-    let guess = models::infer(
+    let guess = plan::think(
+        s,
         &model,
+        "ghost ink",
         include_str!("../../prompts/ghost.txt"),
-        &json!({"sheet":context,"examples":examples,"style":rules}).to_string(),
+        &json!({"sheet":context,"examples":examples.iter().map(|r|json!({"situation":r["situation"],"reply":r["reply"]})).collect::<Vec<_>>(),"style":rules.iter().map(|r|&r["text"]).collect::<Vec<_>>()}),
         14,
+        None,
     )?;
     let guess = guess.trim();
     Ok(
@@ -95,7 +108,11 @@ pub fn suggest(s: &Store, text: &str) -> Res<Value> {
         {
             Value::Null
         } else {
-            candidate(guess, origins)
+            {
+                let mut c = candidate(guess, origins);
+                c["model"] = model["name"].clone();
+                c
+            }
         },
     )
 }
@@ -114,7 +131,7 @@ pub fn shown(s: &Store, a: &Value) -> Res<Value> {
     ) else {
         return Ok(Value::Null);
     };
-    let record = json!({"id":id,"sheet":sheet,"question":context,"guess":guess,"sources":c["sources"],"status":"shown","date":now(),"category":"ghost","model":"local","scope":"live"});
+    let record = json!({"id":id,"sheet":sheet,"question":context,"guess":guess,"sources":c["sources"],"status":"shown","date":now(),"category":"ghost","model":c["model"].as_str().unwrap_or("local"),"scope":"live"});
     s.db.lock()
         .unwrap()
         .execute(
