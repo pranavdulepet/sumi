@@ -1,0 +1,38 @@
+[package]
+name = "sumi"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+default-run = "sumi"
+[build-dependencies]
+cc = "1"
+tauri-build = { version = "2", features = [] }
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.37",features= ["bundled-sqlcipher-vendored-openssl", "backup"] }
+security-framework = "3"
+rand = "0.9"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version="0.4", features= ["serde"] }
+regex = "1"
+ureq = {version="2.12",features= ["json"] }
+walkdir = "2"
+zip = {version="2",default-features=false,features= ["deflate"] }
+rfd="0.15"
+toml_edit="0.22"
+base64="0.22"
+ring="0.17"
+uuid= {version="1",features= ["v4"] }
+url="2"
+tiny_http="0.12"
+notify="8"
+sqlite-vec="=0.1.6"
+[dev-dependencies]
+tempfile="3"
+
+[profile.release]
+strip = true

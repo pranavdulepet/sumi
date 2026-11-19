@@ -1,0 +1,524 @@
+import {ConnectAgents} from './Seal';
+import {Providers} from './Providers';
+import {useState, useEffect} from 'react';
+import {call, type Row, type Action} from './api';
+import {MarkPad, Stroke, Enso} from './Ink';
+export function Models({model, act}: {model: Row | null; act: Action}) {
+  const [fit, fitting] = useState<Row | null>(null);
+  const [items, set] = useState<Row[]>([]),
+    [working, busy] = useState(''),
+    [notice, note] = useState('');
+  async function refresh() {
+    try {
+      set(await call('models'));
+    } catch (e) {
+      note(String(e));
+    }
+  }
+  useEffect(() => {
+    void refresh();
+    call('fit').then(fitting);
+  }, []);
+  const recommended =
+    items.find(m => m.name === model?.name && m.runtime === model?.runtime) ??
+    items.find(
+      m =>
+        m.name === 'llama3.2:3b' &&
+        (!fit?.memory || m.bytes * 2 + 4e9 < fit.memory),
+    ) ??
+    items.find(
+      m => m.bytes && (!fit?.memory || m.bytes * 2 + 4e9 < fit.memory),
+    );
+  function modelRow(m: Row) {
+    return (
+      <button
+        className="row"
+        key={m.runtime + m.name}
+        disabled={!!working}
+        onClick={async () => {
+          busy(m.name);
+          try {
+            await act('model', m);
+            note('Ready for your notebook.');
+          } catch (e) {
+            note(String(e));
+          } finally {
+            busy('');
+          }
+        }}
+      >
+        <span>
+          {m.name}
+          <small>{m.runtime} · on this Mac</small>
+        </span>
+        <span>
+          {model?.name === m.name
+            ? '✓'
+            : working === m.name
+              ? 'Verifying…'
+              : 'Choose'}
+        </span>
+      </button>
+    );
+  }
+  return (
+    <section>
+      <div className="rows">{recommended && modelRow(recommended)}</div>
+      {items.some(m => m !== recommended) && (
+        <details>
+          <summary>Other installed models</summary>
+          <div className="rows">
+            {items.filter(m => m !== recommended).map(modelRow)}
+          </div>
+        </details>
+      )}
+      {!items.length && !model && fit && (
+        <button
+          disabled={!!working || fit.freeDisk < 4200000000}
+          onClick={async () => {
+            busy('gguf');
+            try {
+              await act('downloadBundled');
+              note('Ready for your notebook.');
+            } catch (e) {
+              note(String(e));
+            } finally {
+              busy('');
+            }
+          }}
+        >
+          {working === 'gguf'
+            ? 'Downloading to this Mac…'
+            : fit.freeDisk < 4200000000
+              ? 'More disk space needed'
+              : 'Download Qwen 2.5 · 1.12 GB'}
+        </button>
+      )}
+      {model?.runtime === 'Sumi' && (
+        <p className="small">✓ {model.name} · on this Mac</p>
+      )}
+      <details>
+        <summary>Other ways to think locally</summary>
+        <div className="inline">
+          <button
+            disabled={!!working}
+            onClick={async () => {
+              busy('file');
+              try {
+                await act('importModel');
+              } catch (e) {
+                note(String(e));
+              } finally {
+                busy('');
+              }
+            }}
+          >
+            Choose GGUF file
+          </button>
+          <button
+            disabled={!!working}
+            onClick={async () => {
+              busy('ollama');
+              try {
+                await call('startRuntime');
+                await new Promise(r => setTimeout(r, 1000));
+                await refresh();
+              } catch (e) {
+                note(String(e));
+              } finally {
+                busy('');
+              }
+            }}
+          >
+            Start Ollama
+          </button>
+          <button disabled={!!working} onClick={refresh}>
+            Refresh models
+          </button>
+          {fit?.recommendation &&
+            !items.some(m => m.name === fit.recommendation.name) && (
+              <button
+                disabled={!!working}
+                onClick={async () => {
+                  busy('pull');
+                  try {
+                    await call('startRuntime');
+                    await new Promise(r => setTimeout(r, 1000));
+                    await act('pull', {name: fit.recommendation.name});
+                    await refresh();
+                  } catch (e) {
+                    note(String(e));
+                  } finally {
+                    busy('');
+                  }
+                }}
+              >
+                {working === 'pull'
+                  ? 'Downloading…'
+                  : `Download ${fit.recommendation.name} with Ollama · ${(fit.recommendation.bytes / 1e9).toFixed(1)} GB`}
+              </button>
+            )}
+        </div>
+      </details>
+      {notice && (
+        <p role="status" className="small">
+          {notice}
+        </p>
+      )}
+    </section>
+  );
+}
+export function Sources({
+  sources,
+  act,
+  confirmRemove = false,
+}: {
+  sources: Row[];
+  act: Action;
+  confirmRemove?: boolean;
+}) {
+  const [showMessages, consent] = useState(false),
+    [exports, load] = useState<Row[]>([]);
+  const [found, set] = useState<Row[]>([]),
+    [remove, ask] = useState('');
+  useEffect(() => {
+    call('discover')
+      .then(set)
+      .catch(() => {});
+  }, []);
+  return (
+    <>
+      <div className="rows">
+        {found
+          .filter(v => !sources.some(s => s.id === v.id))
+          .map(v => (
+            <button
+              key={v.id}
+              className="row"
+              onClick={() => act('addSource', {id: v.id})}
+            >
+              <span>
+                {v.label}
+                <small>{v.count} local session files</small>
+              </span>
+              <span>Add ＋</span>
+            </button>
+          ))}
+        {sources.map(s => (
+          <div className="row" key={s.id}>
+            <span>
+              {s.label}
+              <small>Included in your reading</small>
+            </span>
+            <button onClick={() => ask(s.id)}>Remove</button>
+            {remove === s.id && (
+              <div className="sub">
+                <p>
+                  Forget this source and its learned history? Original files
+                  stay on your Mac.
+                </p>
+                <button
+                  onClick={async () => {
+                    await act('forget', {id: s.id});
+                    ask('');
+                  }}
+                >
+                  Forget source
+                </button>{' '}
+                <button onClick={() => ask('')}>Cancel</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="inline">
+        <button onClick={() => act('pickSource', {kind: 'export'})}>
+          Import chat export
+        </button>
+        {confirmRemove && (
+          <button onClick={() => act('pickSource', {kind: 'folder'})}>
+            Choose notes folder
+          </button>
+        )}
+        <button onClick={() => call('exportLink')}>
+          Request ChatGPT history ↗
+        </button>
+        <button onClick={async () => load(await call('exports'))}>
+          Find downloaded exports
+        </button>
+      </div>
+      {exports.map(v => (
+        <button
+          className="row"
+          key={v.path}
+          onClick={() => act('acceptExport', {path: v.path})}
+        >
+          Read {v.name}
+        </button>
+      ))}
+      {confirmRemove && !sources.some(s => s.id === 'messages') && (
+        <details>
+          <summary>Include sent Messages</summary>
+          <p className="small">
+            Reads your sent texts and the preceding message in each
+            conversation. This source requires Full Disk Access and stays local.
+          </p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={showMessages}
+              onChange={e => consent(e.target.checked)}
+            />
+            Include my sent Messages
+          </label>
+          <button
+            disabled={!showMessages}
+            onClick={() => act('messages', {consent: true})}
+          >
+            Add Messages
+          </button>
+        </details>
+      )}
+    </>
+  );
+}
+export function Onboarding({
+  data,
+  act,
+  finish,
+}: {
+  data: Row;
+  act: Action;
+  finish: () => void;
+}) {
+  const [choice, quiz] = useState<Row | null>(null),
+    [last, result] = useState<Row | null>(null);
+  const [step, go] = useState(
+      data.reading ? 3 : data.model && data.mark ? 2 : data.mark ? 1 : 0,
+    ),
+    [busy, setBusy] = useState(false),
+    [reading, setReading] = useState<Row | null>(data.reading),
+    [err, error] = useState('');
+  const [notify, setNotify] = useState(false);
+  const [sentence, setSentence] = useState('');
+  useEffect(() => {
+    if (!busy || step !== 2) return;
+    let live = true;
+    const interval = window.setInterval(() => {
+      void call('readingProgress')
+        .then(v => {
+          if (live && v?.sentence) setSentence(v.sentence);
+        })
+        .catch(() => {});
+    }, 1500);
+    return () => {
+      live = false;
+      clearInterval(interval);
+    };
+  }, [step, busy]);
+  async function read() {
+    setBusy(true);
+    error('');
+    try {
+      setReading(await act('read', {notify}));
+      go(3);
+    } catch (e) {
+      error(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <main className={'welcome stage-' + step}>
+      <div className="folio">
+        SUMI <span>／</span> FIRST READING
+      </div>
+      {step === 0 ? (
+        <>
+          <h1>
+            A mark of your own<span className="punct">.</span>
+          </h1>
+          <p className="lede">
+            One brushstroke becomes the seal you leave
+            <br />
+            on the things Sumi gets right.
+          </p>
+          <MarkPad
+            save={async p => {
+              await act('mark', {points: p});
+              go(1);
+            }}
+          />
+        </>
+      ) : step === 1 ? (
+        <>
+          <h1>A mind for Sumi.</h1>
+          <p className="lede">Choose a model that thinks on your Mac.</p>
+          <Models model={data.model} act={act} />
+          <Providers data={data} act={act} />
+          <button className="primary" onClick={() => go(2)}>
+            {data.model ? 'Continue' : 'Use the notebook without a model'}
+          </button>
+        </>
+      ) : step === 2 ? (
+        <>
+          <h1>{busy ? 'Reading your words.' : 'Your words, by invitation.'}</h1>
+          <p className="lede">
+            {busy
+              ? 'You can close the window while Sumi reads.'
+              : 'Choose the conversations Sumi may learn from.'}
+          </p>
+          {busy ? (
+            <div className="reading">
+              <Enso size={83} />
+              {sentence && (
+                <p className="reading-sentence" key={sentence}>
+                  {sentence}
+                </p>
+              )}
+            </div>
+          ) : (
+            <>
+              <Sources sources={data.sources} act={act} />
+              {data.sources.length > 0 && (
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={notify}
+                    onChange={e => setNotify(e.target.checked)}
+                  />
+                  Notify me when the reading is ready
+                </label>
+              )}
+              <button className="primary" onClick={read}>
+                {data.sources.length
+                  ? 'Begin the first reading'
+                  : 'Continue with a clean page'}
+              </button>
+            </>
+          )}
+          {err && <p role="alert">{err}</p>}
+        </>
+      ) : (
+        <>
+          <Stroke points={data.mark} className="personal-mark" />
+          <h1>
+            {reading?.tested
+              ? 'Your first reading.'
+              : 'Your notebook is ready.'}
+          </h1>
+          {reading?.tested ? (
+            <>
+              <p className="lede">
+                Sumi hid {reading.tested} replies before making its guesses.
+              </p>
+              <div className="pair">
+                <div>
+                  <strong>
+                    {Math.round((100 * reading.cold) / reading.tested)}%
+                  </strong>
+                  <small>Guessing cold</small>
+                </div>
+                <div>
+                  <strong>
+                    {Math.round((100 * reading.warm) / reading.tested)}%
+                  </strong>
+                  <small>With earlier conversations</small>
+                </div>
+              </div>
+              {reading.examples.map((v: Row) => (
+                <details key={v.id}>
+                  <summary>{v.question.slice(0, 85)}</summary>
+                  <p>Guessed · {v.guess}</p>
+                  <p>You said · {v.actual}</p>
+                </details>
+              ))}
+            </>
+          ) : (
+            <p className="lede">
+              {data.sources.length
+                ? 'Your reading has no scorable blind predictions yet. The Mirror will show its sample size as evidence arrives.'
+                : 'Your first sheet is waiting. You can bring in past conversations from the Seal whenever you like.'}
+            </p>
+          )}
+          {reading?.issues?.length > 0 && (
+            <p className="small">{reading?.issues?.[0]}</p>
+          )}
+          {!reading?.tested && (
+            <div className="seed">
+              {!choice ? (
+                <button onClick={async () => quiz(await call('nextChoice'))}>
+                  Try ten quick choices
+                </button>
+              ) : choice.done ? (
+                <p>Your choices are waiting in the Scroll.</p>
+              ) : (
+                <>
+                  <small>
+                    Choice {choice.index} / {choice.total}
+                  </small>
+                  <h3>{choice.question}</h3>
+                  <div className="inline">
+                    {choice.options.map((o: string) => (
+                      <button
+                        disabled={busy}
+                        key={o}
+                        onClick={async () => {
+                          setBusy(true);
+                          try {
+                            result(
+                              await act('seedAnswer', {
+                                id: choice.id,
+                                actual: o,
+                              }),
+                            );
+                            quiz(await call('nextChoice'));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                      >
+                        {o}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {last?.guess && (
+                <p className="small">
+                  For the previous choice, Sumi guessed “{last.guess}”.
+                </p>
+              )}
+            </div>
+          )}
+          {data.proposals?.length > 0 && (
+            <section className="first-proposals">
+              <h2>Does this sound like you?</h2>
+              {data.proposals.slice(0, 3).map((r: Row) => (
+                <div className="row" key={r.id}>
+                  <span>{r.text}</span>
+                  <button onClick={() => act('stamp', {id: r.id})}>
+                    Stamp
+                  </button>
+                </div>
+              ))}
+            </section>
+          )}
+          {data.detectedAgents?.length > 0 && (
+            <details>
+              <summary>Connect an agent on this Mac</summary>
+              <ConnectAgents
+                data={data}
+                act={act}
+                names={data.detectedAgents}
+              />
+            </details>
+          )}
+          <button className="primary" onClick={finish}>
+            Open the Desk
+          </button>
+        </>
+      )}
+    </main>
+  );
+}

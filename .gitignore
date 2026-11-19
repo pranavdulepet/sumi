@@ -1,0 +1,18 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+test-results/
+playwright-report/
+.DS_Store
+
+# Rebuilt locally or attached to a GitHub Release
+release/
+website/*.zip
+src-tauri/runtime/*
+!src-tauri/runtime/LICENSE
+walkthrough-output/
+exa-results/
+.env
+.env.*
+*.gguf

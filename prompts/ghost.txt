@@ -1,0 +1,1 @@
+Complete only the trailing phrase of this unfinished personal note, in its author's voice. Return just the new words, at most eight words. If context does not support a specific completion return NONE.

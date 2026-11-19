@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sumi — a private notebook</title>
+    <style>
+      @font-face {
+        font-family: Mincho;
+        src: url('shippori.woff2');
+      }
+      @font-face {
+        font-family: Zen;
+        src: url('zen.woff2');
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        background: light-dark(#f4efe6, #171513);
+        color: light-dark(#1f1c1a, #e8e1d5);
+        font:
+          17px Zen,
+          sans-serif;
+      }
+      canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      main {
+        position: relative;
+        min-height: 100svh;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        pointer-events: none;
+        padding: 30px;
+        text-align: center;
+      }
+      h1 {
+        font:
+          400 clamp(65px, 11vw, 125px)/1 Mincho,
+          Georgia,
+          serif;
+        letter-spacing: -0.08em;
+        margin: 0;
+      }
+      p {
+        margin: 28px 0 34px;
+      }
+      a {
+        pointer-events: auto;
+        display: block;
+        color: inherit;
+        text-decoration: none;
+        border-bottom: 1px solid;
+        padding: 5px;
+        font-size: 15px;
+      }
+      small {
+        position: absolute;
+        bottom: 25px;
+        font-size: 12px;
+        letter-spacing: 0.09em;
+        opacity: 0.7;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas aria-label="Draw with ink on the paper"></canvas>
+    <main>
+      <h1>Sumi</h1>
+      <p>A private notebook that learns how you think.</p>
+      <a href="Sumi-macOS.zip" download>Download for Mac ↓</a
+      ><small>墨 &nbsp; / &nbsp; Apple Silicon · macOS 14 or later</small>
+    </main>
+    <script>
+      const canvas = document.querySelector('canvas'),
+        ink = canvas.getContext('2d');
+      let strokes = [],
+        active = null;
+      function render() {
+        const scale = devicePixelRatio;
+        canvas.width = innerWidth * scale;
+        canvas.height = innerHeight * scale;
+        ink.scale(scale, scale);
+        ink.lineCap = 'round';
+        ink.lineJoin = 'round';
+        ink.strokeStyle = matchMedia('(prefers-color-scheme:dark)').matches
+          ? '#e8e1d5'
+          : '#1f1c1a';
+        for (const lines of strokes) {
+          ink.beginPath();
+          for (const [i, p] of lines.entries()) {
+            if (!i) {
+              ink.moveTo(p.x, p.y);
+              continue;
+            }
+            ink.lineWidth = p.w;
+            ink.lineTo(p.x, p.y);
+            ink.stroke();
+            ink.beginPath();
+            ink.moveTo(p.x, p.y);
+          }
+        }
+      }
+      function point(e) {
+        return {x: e.clientX, y: e.clientY, w: 1 + 5 * (e.pressure || 0.5)};
+      }
+      canvas.onpointerdown = e => {
+        canvas.setPointerCapture(e.pointerId);
+        active = [point(e)];
+        strokes.push(active);
+      };
+      canvas.onpointermove = e => {
+        if (active) {
+          active.push(point(e));
+          render();
+        }
+      };
+      canvas.onpointerup = canvas.onpointercancel = () => (active = null);
+      addEventListener('resize', render);
+      render();
+    </script>
+  </body>
+</html>
