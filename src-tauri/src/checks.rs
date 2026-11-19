@@ -263,6 +263,127 @@ fn archive_import_follows_the_visible_branch() {
 }
 
 #[test]
+fn transcript_preview_reads_the_tail_and_backfill_recovers_the_boundary_pair() {
+    let (tmp, s) = notebook();
+    for source in ["codex", "claude-code"] {
+        let folder = tmp.path().join(source);
+        std::fs::create_dir(&folder).unwrap();
+        let turn = |role: &str, text: &str, age: i64| {
+            let stamp = chrono::Utc::now() - chrono::Duration::days(age);
+            let message =
+                json!({"role":role,"type":"message","content":[{"type":"text","text":text}]});
+            if source == "codex" {
+                json!({"type":"response_item","timestamp":stamp,"payload":message}).to_string()
+            } else {
+                json!({"timestamp":stamp,"message":message}).to_string()
+            }
+        };
+        let mut lines = vec![
+            turn("assistant", "Which layout?", 5),
+            turn("user", "Keep the margins.", 5),
+        ];
+        lines.extend(std::iter::repeat_n("{}".to_owned(), 795));
+        lines.extend([
+            turn("assistant", "Which old ink?", 150),
+            turn("user", "The grey ink.", 150),
+            turn("assistant", "Which current ink?", 2),
+            turn("user", "The blue ink.", 2),
+        ]);
+        let file = folder.join("sketch.jsonl");
+        std::fs::write(&file, lines.join("\n")).unwrap();
+        let src = app::register(&s, source, &folder, source).unwrap();
+        assert_eq!(sources::ingest_pass(&s, &src, true).unwrap(), (1, true));
+        assert_eq!(sources::ingest_pass(&s, &src, true).unwrap(), (0, true));
+        assert_eq!(sources::ingest_pass(&s, &src, false).unwrap(), (2, false));
+        assert_eq!(sources::ingest_pass(&s, &src, false).unwrap(), (0, false));
+        lines.push(turn("assistant", "Which binding?", 0));
+        std::fs::write(&file, lines.join("\n")).unwrap();
+        assert_eq!(sources::ingest_pass(&s, &src, true).unwrap(), (0, false));
+        lines.push(turn("user", "Use thread.", 0));
+        std::fs::write(&file, lines.join("\n")).unwrap();
+        assert_eq!(sources::ingest_pass(&s, &src, true).unwrap(), (1, false));
+    }
+}
+
+#[test]
+fn recent_export_reading_resumes_older_and_undated_replies_after_reopen() {
+    use chrono::{Duration, Utc};
+    use std::io::Write;
+    let (tmp, s) = notebook();
+    let now = Utc::now();
+    let path = tmp.path().join("export.zip");
+    let source = app::register(&s, "fixture-export", &path, "Example archive").unwrap();
+    let chatgpt = |when: i64, answer: &str| {
+        json!({
+            "id": "continuous-project", "current_node": "b",
+            "mapping": {
+                "a": {"message": {"author":{"role":"assistant"}, "content":{"parts":["What deadline fits?"]}}},
+                "b": {"parent":"a","message":{"author":{"role":"user"},"create_time":when,"content":{"parts":[answer]}}}
+            }
+        })
+    };
+    let parts = [
+        json!([chatgpt((now - Duration::days(101)).timestamp(), "Friday.")]),
+        json!([chatgpt((now - Duration::days(3)).timestamp(), "Tomorrow.")]),
+        json!([{"uuid":"drafting","chat_messages":[
+            {"sender":"assistant","text":"Which pen?"},
+            {"sender":"human","created_at":(now - Duration::days(89)).to_rfc3339(),"text":"","content":[{"type":"text","text":"Use the fine nib."}]},
+            {"sender":"assistant","text":"Which paper?"},
+            {"sender":"human","created_at":null,"text":"The blank sheet."}
+        ]}]),
+    ];
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+    for (i, part) in parts.iter().enumerate() {
+        zip.start_file(
+            format!("conversations-{i:03}.json"),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(&serde_json::to_vec(part).unwrap()).unwrap();
+    }
+    zip.finish().unwrap();
+    assert_eq!(sources::ingest_pass(&s, &source, true).unwrap(), (2, true));
+    let replies = |s: &Store| {
+        let mut results: Vec<_> = ["train", "test", "tune"]
+            .into_iter()
+            .flat_map(|split| sources::moments(s, split, 20).unwrap())
+            .map(|r| r["actual"].as_str().unwrap().to_owned())
+            .collect();
+        results.sort();
+        results
+    };
+    assert_eq!(replies(&s), ["Tomorrow.", "Use the fine nib."]);
+    let root = s.root.clone();
+    drop(s);
+    let restored = Store::with_key(root, &[71; 32]).unwrap();
+    assert_eq!(
+        sources::ingest_pass(&restored, &source, true).unwrap(),
+        (0, true)
+    );
+    assert_eq!(
+        sources::ingest_pass(&restored, &source, false).unwrap(),
+        (2, false)
+    );
+    assert_eq!(
+        replies(&restored),
+        [
+            "Friday.",
+            "The blank sheet.",
+            "Tomorrow.",
+            "Use the fine nib."
+        ]
+    );
+    assert_eq!(
+        sources::ingest_pass(&restored, &source, false).unwrap(),
+        (0, false)
+    );
+    assert_eq!(
+        sources::ingest_pass(&restored, &source, true).unwrap(),
+        (0, false)
+    );
+}
+
+#[test]
 #[ignore = "Needs an already running local Ollama model"]
 fn real_local_reading() {
     let (tmp, s) = notebook();
@@ -272,6 +393,7 @@ fn real_local_reading() {
         .expect("Installed local test model");
     s.set("model", &m).unwrap();
     let path = tmp.path().join("conversations.json");
+    let today = chrono::Utc::now().timestamp();
     let mut exports = vec![];
     let mut trained = 0;
     let mut tested = 0;
@@ -289,9 +411,9 @@ fn real_local_reading() {
             tested += 1
         }
         let ts = if test {
-            1770000000 + i * 90000
+            today - (4 - tested) * 86400
         } else {
-            1760000000 + i * 90000
+            today - (24 - trained) * 86400
         };
         let question = if test {
             format!("How should I format the status report for project {i}?")

@@ -160,6 +160,74 @@ test('brushstroke, real local prediction, correction, history and persisted shee
   }
 });
 
+test('first reading shows a recent reply and leaves older history for idle time', async ({
+  page,
+}) => {
+  const {core, rpc, folder} = await fixtureNotebook();
+  try {
+    // Keep this whole conversation in the permanent evaluation split.
+    let group = 'paper-review';
+    while (createHash('sha256').update(group).digest()[0] >= 26) group += 'x';
+    const turn = (sender: string, text: string, daysAgo: number) => ({
+      sender,
+      text,
+      created_at: new Date(Date.now() - daysAgo * 86400000).toISOString(),
+    });
+    await writeFile(
+      join(folder, 'conversations.json'),
+      JSON.stringify([
+        {
+          uuid: group,
+          chat_messages: [
+            turn('assistant', 'Which typeface for the old poster?', 160),
+            turn('human', 'Use the tall lettering.', 160),
+            turn('assistant', 'Which paper for the new print?', 2),
+            turn('human', 'Use the cream sheet.', 2),
+          ],
+        },
+      ]),
+    );
+    await rpc('mark', {
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    });
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    await page.getByRole('button', {name: /llama3.2:3b/}).click();
+    await page.getByRole('button', {name: 'Continue', exact: true}).click();
+    await page.getByRole('button', {name: 'Import chat export'}).click();
+    await page.getByRole('button', {name: 'Begin the first reading'}).click();
+    await expect(
+      page.getByText('Sumi hid 1 reply before making its guess.'),
+    ).toBeVisible({timeout: 90000});
+    await page
+      .getByText('Which paper for the new print?', {exact: true})
+      .click();
+    await expect(
+      page.getByText('You said · Use the cream sheet.'),
+    ).toBeVisible();
+    await expect(page.getByText(/will continue this reading/)).toBeVisible();
+    await expect(
+      page.getByText('Which typeface for the old poster?'),
+    ).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByText(/will continue this reading/)).toBeVisible();
+  } finally {
+    core.stdin.end();
+  }
+});
+
 test('paper, brush and downloadable local Mac archive', async ({
   page,
 }, info) => {

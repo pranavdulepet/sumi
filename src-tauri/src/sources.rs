@@ -166,12 +166,48 @@ fn boundary(file: &mut fs::File, offset: u64) -> Res<String> {
     file.read_exact(&mut bytes).msg()?;
     Ok(hex::encode(Sha256::digest(bytes)))
 }
+const FIRST_SESSION_LINES: usize = 800;
+const FIRST_SESSION_BYTES: u64 = 4_000_000;
+
+// Start at a complete line near the end of a long transcript. Fresh replies
+// should be visible even when months of older turns precede them in one file.
+fn recent_start(file: &mut fs::File, from: u64, end: u64) -> Res<u64> {
+    let floor = from.max(end.saturating_sub(FIRST_SESSION_BYTES));
+    let mut pos = end;
+    let mut lines = 0;
+    let mut earliest = end;
+    let mut buf = [0u8; 8192];
+    while pos > floor {
+        let size = (pos - floor).min(buf.len() as u64) as usize;
+        pos -= size as u64;
+        file.seek(SeekFrom::Start(pos)).msg()?;
+        file.read_exact(&mut buf[..size]).msg()?;
+        for i in (0..size).rev() {
+            let start = pos + i as u64 + 1;
+            if buf[i] == b'\n' && start < end {
+                earliest = start;
+                lines += 1;
+                if lines == FIRST_SESSION_LINES {
+                    return Ok(start);
+                }
+            }
+        }
+    }
+    Ok(if floor == from { from } else { earliest })
+}
+
+const RECENT_SECONDS: i64 = 90 * 86400;
+fn recent_reply(stamp: &str, since: i64) -> bool {
+    crate::scroll::instant(stamp)
+        .is_some_and(|t| (since..=since + RECENT_SECONDS).contains(&t.timestamp()))
+}
+
 fn session(
     s: &Store,
     source: &str,
     p: &Path,
     cursor: &str,
-    max_lines: usize,
+    since: Option<i64>,
 ) -> Res<(usize, bool)> {
     use std::os::unix::fs::MetadataExt;
     let mut file = fs::File::open(p).msg()?;
@@ -187,13 +223,26 @@ fn session(
     } else {
         offset = 0;
     }
+    let mut deferred = false;
+    if since.is_some() {
+        let start = recent_start(&mut file, offset, meta.len())?;
+        if start > offset {
+            previous.clear();
+            offset = start;
+            deferred = true;
+        }
+    }
     file.seek(SeekFrom::Start(offset)).msg()?;
     let mut reader = BufReader::new(file);
     let mut count = 0;
     let group = p.file_stem().unwrap_or_default().to_string_lossy();
     let mut bytes = Vec::new();
     let mut incomplete_tail = false;
-    for _ in 0..max_lines {
+    for _ in 0..if since.is_some() {
+        FIRST_SESSION_LINES
+    } else {
+        10000
+    } {
         bytes.clear();
         let read = reader.read_until(b'\n', &mut bytes).msg()?;
         if read == 0 {
@@ -227,18 +276,21 @@ fn session(
         match m["role"].as_str() {
             Some("assistant") => previous = audit(&t).unwrap_or_default(),
             Some("user") if !previous.is_empty() => {
-                count += add(
-                    s,
-                    source,
-                    &group,
-                    v["timestamp"].as_str().unwrap_or(""),
-                    &previous,
-                    &t,
-                )? as usize;
+                let stamp = v["timestamp"].as_str().unwrap_or("");
+                if since.is_some_and(|t| !recent_reply(stamp, t)) {
+                    deferred = true;
+                } else {
+                    count += add(s, source, &group, stamp, &previous, &t)? as usize;
+                }
                 previous.clear()
             }
             _ => {}
         }
+    }
+    if deferred {
+        // The idle reader resumes from the last contiguous cursor and picks
+        // up any pair that straddled the beginning of this preview.
+        return Ok((count, false));
     }
     let mut file = reader.into_inner();
     s.set(cursor, &json!({"offset":offset,"inode":meta.ino(),"boundary":boundary(&mut file,offset)?,"previous":previous}))?;
@@ -282,8 +334,28 @@ fn chat_path<'a>(map: &'a serde_json::Map<String, Value>, current: &Value) -> Ve
     }
     path
 }
-fn export(s: &Store, source: &str, v: &Value) -> Res<usize> {
+#[derive(Clone, Copy)]
+enum ExportWindow {
+    All,
+    Recent(i64),
+    Backfill(i64),
+}
+
+fn export(s: &Store, source: &str, v: &Value, window: ExportWindow) -> Res<(usize, bool)> {
     let mut n = 0;
+    let mut deferred = false;
+    let mut record = |group: &str, stamp: &str, question: &str, reply: &str| -> Res<()> {
+        match window {
+            ExportWindow::Recent(since) if !recent_reply(stamp, since) => {
+                deferred = true;
+                return Ok(());
+            }
+            ExportWindow::Backfill(since) if recent_reply(stamp, since) => return Ok(()),
+            _ => {}
+        }
+        n += add(s, source, group, stamp, question, reply)? as usize;
+        Ok(())
+    };
     for c in v
         .as_array()
         .ok_or("Expected a conversation export array.")?
@@ -306,14 +378,7 @@ fn export(s: &Store, source: &str, v: &Value) -> Res<usize> {
                             .and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0))
                             .map(|t| t.to_rfc3339())
                             .unwrap_or_default();
-                        n += add(
-                            s,
-                            source,
-                            group,
-                            &stamp,
-                            &previous,
-                            &content(&m["content"]["parts"]),
-                        )? as usize;
+                        record(group, &stamp, &previous, &content(&m["content"]["parts"]))?;
                         previous.clear();
                     }
                     _ => {}
@@ -324,25 +389,19 @@ fn export(s: &Store, source: &str, v: &Value) -> Res<usize> {
             for m in ms {
                 let t = m["text"]
                     .as_str()
+                    .filter(|text| !text.trim().is_empty())
                     .map(str::to_owned)
                     .unwrap_or_else(|| content(&m["content"]));
                 if m["sender"] == "assistant" {
                     prev = t
                 } else if m["sender"] == "human" && !prev.is_empty() {
-                    n += add(
-                        s,
-                        source,
-                        group,
-                        m["created_at"].as_str().unwrap_or(""),
-                        &prev,
-                        &t,
-                    )? as usize;
+                    record(group, m["created_at"].as_str().unwrap_or(""), &prev, &t)?;
                     prev.clear()
                 }
             }
         }
     }
-    Ok(n)
+    Ok((n, deferred))
 }
 #[cfg(test)]
 pub fn ingest(s: &Store, source: &Value) -> Res<usize> {
@@ -367,7 +426,10 @@ pub fn ingest_pass(s: &Store, source: &Value, first: bool) -> Res<(usize, bool)>
     paths
         .sort_by_cached_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).ok()));
     let start = std::time::Instant::now();
-    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86400);
+    let cutoff =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(RECENT_SECONDS as u64);
+    let since = chrono::DateTime::<chrono::Utc>::from(cutoff).timestamp();
+    let mut pending = false;
     for path in paths {
         if start.elapsed().as_secs() >= if first { 12 } else { 40 } {
             return Ok((n, true));
@@ -383,24 +445,46 @@ pub fn ingest_pass(s: &Store, source: &Value, first: bool) -> Res<(usize, bool)>
                 .unwrap_or(0)
         );
         let cursor = format!("cursor/{key}/{}", hash(&path.to_string_lossy()));
-        if s.get(&cursor)? == fingerprint {
+        let saved = s.get(&cursor)?;
+        if saved == fingerprint {
             continue;
         }
-        if first && meta.modified().is_ok_and(|d| d < cutoff) {
+        let ext = path.extension().and_then(|x| x.to_str());
+        let is_export = matches!(ext, Some("json" | "zip"));
+        if first && !is_export && meta.modified().is_ok_and(|d| d < cutoff) {
             return Ok((n, true));
         }
-        match path.extension().and_then(|x| x.to_str()) {
+        // Freeze the boundary between passes. Reopening the notebook tomorrow
+        // must not drop replies that crossed the 90-day boundary overnight.
+        let window = match saved["since"]
+            .as_i64()
+            .filter(|_| saved["file"] == fingerprint)
+        {
+            Some(_) if first => {
+                pending = true;
+                continue;
+            }
+            Some(t) => ExportWindow::Backfill(t),
+            None if first => ExportWindow::Recent(since),
+            None => ExportWindow::All,
+        };
+        let mut deferred = false;
+        match ext {
             Some("jsonl") => {
                 let (added, done) = session(
                     s,
                     key,
                     &path,
                     &format!("{cursor}/position"),
-                    if first { 800 } else { 10000 },
+                    first.then_some(since),
                 )?;
                 n += added;
                 if !done {
-                    return Ok((n, true));
+                    if first {
+                        deferred = true;
+                    } else {
+                        return Ok((n, true));
+                    }
                 }
             }
             Some("md" | "txt") if meta.len() < 4_000_000 => {
@@ -419,11 +503,14 @@ pub fn ingest_pass(s: &Store, source: &Value, first: bool) -> Res<(usize, bool)>
                 }
             }
             Some("json") if meta.len() < 256_000_000 => {
-                n += export(
+                let (added, older) = export(
                     s,
                     key,
                     &serde_json::from_reader(fs::File::open(&path).msg()?).msg()?,
-                )?
+                    window,
+                )?;
+                n += added;
+                deferred = older;
             }
             Some("zip") => {
                 let mut z = zip::ZipArchive::new(fs::File::open(&path).msg()?).msg()?;
@@ -436,7 +523,9 @@ pub fn ingest_pass(s: &Store, source: &Value, first: bool) -> Res<(usize, bool)>
                         && f.size() < 256_000_000
                     {
                         let v = serde_json::from_reader(f.take(256_000_000)).msg()?;
-                        n += export(s, key, &v)?;
+                        let (added, older) = export(s, key, &v, window)?;
+                        n += added;
+                        deferred |= older;
                         found = true
                     }
                 }
@@ -446,9 +535,14 @@ pub fn ingest_pass(s: &Store, source: &Value, first: bool) -> Res<(usize, bool)>
             }
             _ => {}
         }
-        s.set(&cursor, &json!(fingerprint))?;
+        if deferred {
+            s.set(&cursor, &json!({"file": fingerprint, "since": since}))?;
+            pending = true;
+        } else {
+            s.set(&cursor, &json!(fingerprint))?;
+        }
     }
-    Ok((n, false))
+    Ok((n, pending))
 }
 pub fn moments(s: &Store, split: &str, limit: i64) -> Res<Vec<Value>> {
     moments_before(s, split, limit, None)

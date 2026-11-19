@@ -478,7 +478,9 @@ export function Onboarding({
           {reading?.tested ? (
             <>
               <p className="lede">
-                Sumi hid {reading.tested} replies before making its guesses.
+                Sumi hid{' '}
+                {reading.tested === 1 ? '1 reply' : reading.tested + ' replies'}{' '}
+                before making its {reading.tested === 1 ? 'guess' : 'guesses'}.
               </p>
               <div className="pair">
                 <div>
@@ -507,6 +509,12 @@ export function Onboarding({
               {data.sources.length
                 ? 'Your reading has no scorable blind predictions yet. The Mirror will show its sample size as evidence arrives.'
                 : 'Your first sheet is waiting. You can bring in past conversations from the Seal whenever you like.'}
+            </p>
+          )}
+          {reading?.pending && (
+            <p className="small">
+              Sumi will continue this reading when your Mac is idle and plugged
+              in.
             </p>
           )}
           {reading?.issues?.length > 0 && (
