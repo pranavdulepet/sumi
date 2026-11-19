@@ -2,6 +2,8 @@
 
 Sumi is a private notebook for Apple Silicon Macs running macOS 14 or later. It records what it guessed before you tell it what you did. Over time, those comparisons give you evidence for deciding which beliefs to keep.
 
+[Watch the ten walkthroughs](docs/walkthroughs.md) · [Download for Mac](https://github.com/pranavdulepet/sumi/releases/latest/download/Sumi-macOS.zip)
+
 ## Open your notebook
 
 Download **Sumi-macOS.zip** from the [latest release](https://github.com/pranavdulepet/sumi/releases/latest), unzip it, and move Sumi to Applications. Move the app to its lasting location before connecting agents. This build uses an ad-hoc signature. A rebuilt copy may trigger macOS Keychain authorization for the existing notebook. The release has no Apple notarization ticket.
