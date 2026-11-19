@@ -3,6 +3,7 @@ use regex::Regex;
 use rusqlite::params;
 use serde_json::{json, Value};
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -243,6 +244,44 @@ fn session(
     s.set(cursor, &json!({"offset":offset,"inode":meta.ino(),"boundary":boundary(&mut file,offset)?,"previous":previous}))?;
     Ok((count, incomplete_tail || offset >= meta.len()))
 }
+// A regenerated reply or an edited prompt creates sibling nodes. Without a
+// selected node, only the prefix before the first fork is unambiguous.
+fn chat_path<'a>(map: &'a serde_json::Map<String, Value>, current: &Value) -> Vec<&'a Value> {
+    if !current.is_null() {
+        let mut path = Vec::new();
+        let mut seen = HashSet::new();
+        let mut next = current;
+        while !next.is_null() {
+            let Some((id, node)) = next.as_str().and_then(|id| map.get_key_value(id)) else {
+                return Vec::new();
+            };
+            if !seen.insert(id) {
+                return Vec::new();
+            }
+            path.push(&node["message"]);
+            next = &node["parent"];
+        }
+        path.reverse();
+        return path;
+    }
+
+    let mut children: HashMap<Option<&str>, Vec<&str>> = HashMap::new();
+    for (id, node) in map {
+        let parent = &node["parent"];
+        if parent.is_null() || parent.as_str().is_some_and(|p| map.contains_key(p)) {
+            children.entry(parent.as_str()).or_default().push(id);
+        } else {
+            return Vec::new();
+        }
+    }
+    let mut path = Vec::new();
+    let mut parent = None;
+    while let Some([child]) = children.get(&parent).map(Vec::as_slice) {
+        path.push(&map[*child]["message"]);
+        parent = Some(child);
+    }
+    path
+}
 fn export(s: &Store, source: &str, v: &Value) -> Res<usize> {
     let mut n = 0;
     for c in v
@@ -251,31 +290,34 @@ fn export(s: &Store, source: &str, v: &Value) -> Res<usize> {
     {
         let group = c["id"].as_str().or(c["uuid"].as_str()).unwrap_or("export");
         if let Some(map) = c["mapping"].as_object() {
-            for node in map.values() {
-                let m = &node["message"];
-                if m["author"]["role"] != "user" {
+            let mut previous = String::new();
+            for m in chat_path(map, &c["current_node"]) {
+                if m["metadata"]["is_visually_hidden_from_conversation"] == true
+                    || m["metadata"]["is_user_system_message"] == true
+                    || m["recipient"].as_str().is_some_and(|r| r != "all")
+                {
                     continue;
                 }
-                let parent = &map
-                    .get(node["parent"].as_str().unwrap_or(""))
-                    .unwrap_or(&Value::Null)["message"];
-                if parent["author"]["role"] != "assistant" {
-                    continue;
+                match m["author"]["role"].as_str() {
+                    Some("assistant") => previous = content(&m["content"]["parts"]),
+                    Some("user") if !previous.is_empty() => {
+                        let stamp = m["create_time"]
+                            .as_f64()
+                            .and_then(|t| chrono::DateTime::from_timestamp(t as i64, 0))
+                            .map(|t| t.to_rfc3339())
+                            .unwrap_or_default();
+                        n += add(
+                            s,
+                            source,
+                            group,
+                            &stamp,
+                            &previous,
+                            &content(&m["content"]["parts"]),
+                        )? as usize;
+                        previous.clear();
+                    }
+                    _ => {}
                 }
-                let ts = chrono::DateTime::from_timestamp(
-                    m["create_time"].as_f64().unwrap_or(0.) as i64,
-                    0,
-                )
-                .map(|x| x.to_rfc3339())
-                .unwrap_or_default();
-                n += add(
-                    s,
-                    source,
-                    group,
-                    &ts,
-                    &content(&parent["content"]["parts"]),
-                    &content(&m["content"]["parts"]),
-                )? as usize
             }
         } else if let Some(ms) = c["chat_messages"].as_array() {
             let mut prev = String::new();

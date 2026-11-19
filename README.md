@@ -10,6 +10,8 @@ Download **Sumi-macOS.zip** from the [latest release](https://github.com/pranavd
 
 Draw a mark or choose the keyboard-accessible stroke. Pick an installed local model, supply a GGUF file, or allow the bundled runtime to download its listed model. A clean notebook works without model weights. Each conversation source asks for your permission. You can skip imports entirely.
 
+When you import a ChatGPT archive, Sumi reads the conversation branch selected at export time. If the export omits the selection, Sumi reads the shared history up to the first fork. To replace a previously imported archive and its learned history, open **Seal**, remove that source, confirm **Forget source**, then import the archive again.
+
 Write a real decision on the Desk and choose **Seal a guess**. Later, enter what you decided, open the seal, and judge the guess. The Mirror records your verdict. Open **Places** or press ⌘1–4 to move among the Desk, Scroll, Mirror and Seal. Option-Space opens a fresh sheet inside Sumi and works globally when macOS grants the shortcut. You can also choose **New Desk Sheet** from Sumi’s menu bar dot.
 
 When you return the next morning, the Desk opens a blank sheet. Earlier writing stays under **Sheets**. A waiting question names the agent that asked it. Open that line to answer in the Seal, where the agent can collect your reply.

@@ -201,6 +201,68 @@ fn guesses_stay_opaque_until_decided() {
 }
 
 #[test]
+fn archive_import_follows_the_visible_branch() {
+    use std::io::Write;
+    let (tmp, s) = notebook();
+    let path = tmp.path().join("export.zip");
+    let node = |parent: Value, role: &str, words: &str| json!({"parent":parent,"message":{"author":{"role":role},"content":{"parts":[words]}}});
+    let mut tree = json!({
+        "z":node(Value::Null, "assistant", "When should we meet?"),
+        "s":node(json!("z"), "user", "On Wednesday."),
+        "m":node(json!("s"), "assistant", "How long should we meet?"),
+        "x":node(json!("m"), "user", "A whole day."),
+        "y":node(json!("m"), "assistant", "internal routing"),
+        "t":node(json!("y"), "tool", "tool context"),
+        "h":node(json!("t"), "user", "hidden instructions"),
+        "a":node(json!("h"), "user", "Half an hour."),
+        "b":node(json!("a"), "user", "Another thought."),
+        "c":node(json!("b"), "assistant", "What happened after editing?"),
+        "d":node(json!("c"), "user", "A later reply.")
+    });
+    tree["y"]["message"]["recipient"] = json!("local_tool");
+    tree["h"]["message"]["metadata"] = json!({"is_visually_hidden_from_conversation":true});
+    let archive = json!([
+        {"id":"chosen","current_node":"b","mapping":tree},
+        {"id":"no-marker","mapping":tree},
+        {"id":"missing-node","current_node":"absent","mapping":tree},
+        {"id":"cycle","current_node":"v","mapping":{
+            "u":node(json!("v"), "assistant", "Cycle question"),
+            "v":node(json!("u"), "user", "Cycle reply")
+        }}
+    ]);
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+    zip.start_file(
+        "history/conversations-001.json",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(&serde_json::to_vec(&archive).unwrap())
+        .unwrap();
+    zip.finish().unwrap();
+    let src = app::register(&s, "fixture-export", &path, "Export").unwrap();
+    assert_eq!(sources::ingest(&s, &src).unwrap(), 3);
+    assert_eq!(sources::ingest(&s, &src).unwrap(), 0);
+    let mut pairs = Vec::new();
+    for split in ["train", "tune", "test"] {
+        for m in sources::moments(&s, split, 20).unwrap() {
+            pairs.push((
+                m["question"].as_str().unwrap().to_owned(),
+                m["actual"].as_str().unwrap().to_owned(),
+            ));
+        }
+    }
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        [
+            ("How long should we meet?".into(), "Half an hour.".into()),
+            ("When should we meet?".into(), "On Wednesday.".into()),
+            ("When should we meet?".into(), "On Wednesday.".into()),
+        ]
+    );
+}
+
+#[test]
 #[ignore = "Needs an already running local Ollama model"]
 fn real_local_reading() {
     let (tmp, s) = notebook();
@@ -231,7 +293,26 @@ fn real_local_reading() {
         } else {
             1760000000 + i * 90000
         };
-        exports.push(json!({"id":k,"mapping":{"a":{"message":{"author":{"role":"assistant"},"content":{"parts":[if test{format!("How should I format the status report for project {i}?")}else{"How should I format a project status report?".to_owned()}]}}},"u":{"parent":"a","message":{"author":{"role":"user"},"create_time":ts,"content":{"parts":["Use three headings: Trail, Turn, Next."]}}}}}));
+        let question = if test {
+            format!("How should I format the status report for project {i}?")
+        } else {
+            "How should I format a project status report?".to_owned()
+        };
+        let reply = |text: &str| {
+            json!({
+                "parent": "a",
+                "message": {"author": {"role": "user"}, "create_time": ts, "content": {"parts": [text]}}
+            })
+        };
+        exports.push(json!({
+            "id": k,
+            "current_node": "u",
+            "mapping": {
+                "a": {"message": {"author": {"role": "assistant"}, "content": {"parts": [question]}}},
+                "u": reply("Use three headings: Trail, Turn, Next."),
+                "discarded": reply("Print the entire report in reverse.")
+            }
+        }));
         if trained == 6 && tested == 2 {
             break;
         }
