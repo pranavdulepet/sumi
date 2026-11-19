@@ -332,6 +332,9 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
             }
         }
         for v in &test {
+            if crate::quitting() {
+                return Err("The reading was interrupted.".into());
+            }
             if idle_only && !crate::local::idle() {
                 pending = true;
                 break;
@@ -524,13 +527,24 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
                 continue;
             }
             match reflect(s, &m, chunk, true) {
-                Ok(_) => s.set(&seen, &json!(true))?,
+                Ok(rule) => {
+                    s.set(&seen, &json!(true))?;
+                    if let Some(rule) = rule.filter(|_| !idle_only) {
+                        s.set(
+                            "readingProgress",
+                            &json!({"sentence":rule["text"], "sources":rule["sources"]}),
+                        )?;
+                    }
+                }
                 Err(e) => {
                     issues.push(e);
                     break;
                 }
             }
         }
+    }
+    if crate::quitting() {
+        return Err("The reading was interrupted.".into());
     }
     let r = json!({"date":now(),"training":train.len(),"tested":count,"cold":cold,"warm":warm,"examples":examples,"issues":issues,"pending":pending});
     s.set("reading", &r)?;

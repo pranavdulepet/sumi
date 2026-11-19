@@ -229,6 +229,111 @@ test('first reading shows a recent reply and leaves older history for idle time'
   }
 });
 
+test('first reading survives a reloaded window and resumes a scored notebook after quit', async ({
+  page,
+  context,
+}) => {
+  let notebook = await fixtureNotebook();
+  const {folder} = notebook;
+  try {
+    let group = 'evening-edits';
+    while (createHash('sha256').update(group).digest()[0] >= 26) group += 'x';
+    const choices = [
+      ['Which pen for the cover?', 'Use the fine nib.'],
+      ['When should we review the proof?', 'Tomorrow morning.'],
+      ['What should the cover show?', 'One printed leaf.'],
+      ['Where should the title go?', 'Below the picture.'],
+      ['Which paper for the insert?', 'The cream sheet.'],
+      ['How many proofs should we send?', 'Just one.'],
+    ];
+    await writeFile(
+      join(folder, 'conversations.json'),
+      JSON.stringify([
+        {
+          uuid: group,
+          chat_messages: choices.flatMap(([question, answer]) => [
+            {sender: 'assistant', text: question},
+            {
+              sender: 'human',
+              text: answer,
+              created_at: new Date(Date.now() - 86400000).toISOString(),
+            },
+          ]),
+        },
+      ]),
+    );
+    await notebook.rpc('mark', {
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    });
+    await notebook.rpc('model', {runtime: 'Ollama', name: 'llama3.2:3b'});
+    await context.exposeFunction('sumiTestIPC', (op: string, args: object) =>
+      notebook.rpc(op, args),
+    );
+    await context.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    await page.getByRole('button', {name: 'Import chat export'}).click();
+    await page.getByRole('button', {name: 'Begin the first reading'}).click();
+    await expect(
+      page.getByRole('heading', {name: 'Reading your words.'}),
+    ).toBeVisible();
+    const job = (await notebook.rpc('firstReadingProgress')).job;
+    await page.reload();
+    await expect(
+      page.getByRole('heading', {name: 'Reading your words.'}),
+    ).toBeVisible();
+    await notebook.rpc('beginFirstReading', {notify: false});
+    expect((await notebook.rpc('firstReadingProgress')).job.started).toBe(
+      job.started,
+    );
+    await expect
+      .poll(async () => (await notebook.rpc('state')).scores.length, {
+        timeout: 60000,
+      })
+      .toBeGreaterThan(0);
+    const before = await notebook.rpc('state');
+    expect(before.reading).toBeNull();
+    expect(before.scores.length).toBeLessThan(choices.length);
+    await page.close();
+    const exited = new Promise<void>(resolve =>
+      notebook.core.once('close', () => resolve()),
+    );
+    notebook.core.stdin.end();
+    await exited;
+    notebook = await fixtureNotebook(false, undefined, folder);
+    const reopened = await context.newPage();
+    await reopened.goto('/');
+    await expect(
+      reopened.getByRole('heading', {name: 'Reading your words.'}),
+    ).toBeVisible();
+    expect((await notebook.rpc('firstReadingProgress')).job.started).toBe(
+      job.started,
+    );
+    await expect(
+      reopened.getByText('Sumi hid 6 replies before making its guesses.'),
+    ).toBeVisible({timeout: 90000});
+    const after = await notebook.rpc('state');
+    expect(after.firstReading).toBeNull();
+    expect(after.scores).toHaveLength(choices.length);
+    for (const scored of before.scores)
+      expect(after.scores).toContainEqual(scored);
+    await reopened.getByRole('button', {name: 'Open the Desk'}).click();
+    await expect(reopened.getByLabel('Desk sheet')).toBeVisible();
+  } finally {
+    notebook.core.stdin.end();
+  }
+});
+
 test('a requested export arrives after reopening and waits for consent', async ({
   page,
 }) => {

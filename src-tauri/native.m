@@ -43,17 +43,38 @@ int sumi_semantic(const char *input,float *result,int length){
  }
 }
 
+static dispatch_group_t sumi_notification_permission(void) {
+    static dispatch_group_t group;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ group = dispatch_group_create(); });
+    return group;
+}
 void sumi_request_notifications(void) {
     @autoreleasepool {
-        [[UNUserNotificationCenter currentNotificationCenter] requestAuthorizationWithOptions:UNAuthorizationOptionAlert completionHandler:^(BOOL granted, NSError *error) { (void)granted; (void)error; }];
+        dispatch_group_t group = sumi_notification_permission();
+        dispatch_group_enter(group);
+        [[UNUserNotificationCenter currentNotificationCenter]
+            requestAuthorizationWithOptions:UNAuthorizationOptionAlert
+            completionHandler:^(BOOL granted, NSError *error) {
+                (void)granted;
+                (void)error;
+                dispatch_group_leave(group);
+            }];
     }
 }
 void sumi_notify_when_ready(void) {
-    @autoreleasepool {
-        UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
-        content.title = @"Sumi";
-        content.body = @"Your first reading is ready.";
-        UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:@"first-reading" content:content trigger:nil];
-        [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:request withCompletionHandler:nil];
-    }
+    // A small notebook can finish before the person answers the permission sheet.
+    dispatch_group_notify(sumi_notification_permission(), dispatch_get_main_queue(), ^{
+        UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+        [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *settings) {
+            if (settings.authorizationStatus != UNAuthorizationStatusAuthorized &&
+                settings.authorizationStatus != UNAuthorizationStatusProvisional) return;
+            UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+            content.title = @"Sumi";
+            content.body = @"Your first reading is ready.";
+            UNNotificationRequest *request = [UNNotificationRequest
+                requestWithIdentifier:@"first-reading" content:content trigger:nil];
+            [center addNotificationRequest:request withCompletionHandler:nil];
+        }];
+    });
 }

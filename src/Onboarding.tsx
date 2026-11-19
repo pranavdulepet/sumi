@@ -387,42 +387,59 @@ export function Onboarding({
   data,
   act,
   finish,
+  refresh,
 }: {
   data: Row;
   act: Action;
   finish: () => void;
+  refresh: () => Promise<void>;
 }) {
   const [choice, quiz] = useState<Row | null>(null),
     [last, result] = useState<Row | null>(null);
-  const [step, go] = useState(
-      data.reading ? 3 : data.model && data.mark ? 2 : data.mark ? 1 : 0,
-    ),
-    [busy, setBusy] = useState(false),
-    [reading, setReading] = useState<Row | null>(data.reading),
-    [err, error] = useState('');
-  const [notify, setNotify] = useState(false);
+  const [chosenStep, go] = useState(
+    data.model && data.mark ? 2 : data.mark ? 1 : 0,
+  );
+  const [busy, setBusy] = useState(false);
+  const [err, error] = useState('');
+  const [notify, setNotify] = useState(data.firstReading?.notify === true);
   const [sentence, setSentence] = useState('');
+  const reading: Row | null = data.reading;
+  const job = data.firstReading;
+  const step = reading ? 3 : job ? 2 : chosenStep;
+  const running = job?.status === 'running' && !reading;
   useEffect(() => {
-    if (!busy || step !== 2) return;
+    if (!running) return;
     let live = true;
-    const interval = window.setInterval(() => {
-      void call('readingProgress')
-        .then(v => {
-          if (live && v?.sentence) setSentence(v.sentence);
-        })
-        .catch(() => {});
-    }, 1500);
+    let checking = false;
+    async function check() {
+      if (checking || document.hidden) return;
+      checking = true;
+      try {
+        const status = await call('firstReadingProgress');
+        if (!live) return;
+        if (status.job?.status !== 'running') await refresh();
+        else setSentence(status.progress?.sentence || '');
+      } catch (e) {
+        if (live) error(String(e));
+      } finally {
+        checking = false;
+      }
+    }
+    void check();
+    const timer = window.setInterval(check, 1500);
+    document.addEventListener('visibilitychange', check);
     return () => {
       live = false;
-      clearInterval(interval);
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', check);
     };
-  }, [step, busy]);
+  }, [running, refresh]);
   async function read() {
     setBusy(true);
     error('');
+    setSentence('');
     try {
-      setReading(await act('read', {notify}));
-      go(3);
+      await act('beginFirstReading', {notify});
     } catch (e) {
       error(String(e));
     } finally {
@@ -463,14 +480,18 @@ export function Onboarding({
         </>
       ) : step === 2 ? (
         <>
-          <h1>{busy ? 'Reading your words.' : 'Your words, by invitation.'}</h1>
+          <h1>
+            {running || busy
+              ? 'Reading your words.'
+              : 'Your words, by invitation.'}
+          </h1>
           <p className="lede">
-            {busy
-              ? 'You can close the window while Sumi reads.'
+            {running || busy
+              ? 'You can close this window. If you quit Sumi, the reading resumes when you return.'
               : 'Choose the conversations Sumi may learn from.'}
           </p>
-          {busy ? (
-            <div className="reading">
+          {running || busy ? (
+            <div className="reading" aria-live="polite">
               <Enso size={83} />
               {sentence && (
                 <p className="reading-sentence" key={sentence}>
@@ -496,13 +517,15 @@ export function Onboarding({
                 </label>
               )}
               <button className="primary" onClick={read}>
-                {data.sources.length
-                  ? 'Begin the first reading'
-                  : 'Continue with a clean page'}
+                {job?.status === 'failed'
+                  ? 'Retry the first reading'
+                  : data.sources.length
+                    ? 'Begin the first reading'
+                    : 'Continue with a clean page'}
               </button>
             </>
           )}
-          {err && <p role="alert">{err}</p>}
+          {(err || job?.error) && <p role="alert">{err || job.error}</p>}
         </>
       ) : (
         <>

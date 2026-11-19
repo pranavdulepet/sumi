@@ -10,6 +10,8 @@ Download **Sumi-macOS.zip** from the [latest release](https://github.com/pranavd
 
 Draw a mark or choose the keyboard-accessible stroke. Pick an installed local model, supply a GGUF file, or allow the bundled runtime to download its listed model. A clean notebook works without model weights. Each conversation source asks for your permission. You can skip imports entirely.
 
+You can close the window during the first reading. If you quit the app, opening the notebook resumes the reading and keeps replies already scored.
+
 The first reading prioritizes replies from the last 90 days. For a long coding session, it starts near the end so your latest decisions can reach the notebook first. Sumi picks up the rest while your Mac is idle and plugged in.
 
 Choose **Request ChatGPT history** to open the export page. Sumi then watches Downloads for a completed chat archive. You can keep writing or quit Sumi while you wait. When the file arrives, choose whether to add it from the Desk or Sources. **Stop looking** cancels the request.

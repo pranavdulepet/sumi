@@ -8,6 +8,49 @@ fn notebook() -> (tempfile::TempDir, Store) {
     (tmp, s)
 }
 #[test]
+fn first_reading_keeps_one_owner_and_retries_only_on_request_after_failure() {
+    use std::{
+        sync::{atomic::Ordering, Arc},
+        time::{Duration, Instant},
+    };
+    let (_dir, store) = notebook();
+    let s = Arc::new(store);
+    let other = Arc::new(Store::with_key(s.root.clone(), &[71; 32]).unwrap());
+    let wait = |expected: &Value| {
+        let end = Instant::now() + Duration::from_secs(5);
+        while &first_reading::progress(&s).unwrap()["job"]["status"] != expected {
+            assert!(
+                Instant::now() < end,
+                "First reading never reached {expected}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    first_reading::start(&s, None).unwrap();
+    assert!(s.get("firstReading").unwrap().is_null());
+    let hold = s.lifecycle.write().unwrap();
+    first_reading::start(&s, Some(false)).unwrap();
+    let original = s.get("firstReading").unwrap();
+    first_reading::start(&other, Some(false)).unwrap();
+    first_reading::start(&other, None).unwrap();
+    assert_eq!(s.get("firstReading").unwrap(), original);
+    assert!(s.get("reading").unwrap().is_null());
+    // Simulate a conflict with an existing synchronous reader.
+    s.reading.store(true, Ordering::SeqCst);
+    drop(hold);
+    wait(&json!("failed"));
+    s.reading.store(false, Ordering::SeqCst);
+    first_reading::start(&other, None).unwrap();
+    assert_eq!(s.get("firstReading").unwrap()["status"], "failed");
+    first_reading::start(&other, Some(false)).unwrap();
+    wait(&Value::Null);
+    let report = s.get("reading").unwrap();
+    assert_eq!(report["tested"], 0);
+    first_reading::start(&s, Some(false)).unwrap();
+    assert_eq!(s.get("reading").unwrap(), report);
+}
+
+#[test]
 fn encryption_and_readable_markdown() {
     let (tmp, s) = notebook();
     app::action(
@@ -693,10 +736,7 @@ fn tray_tracks_the_open_question_across_later_activity() {
     );
     assert_eq!(s.db.lock().unwrap().total_changes(), writes_before);
 }
-#[test]
-#[ignore = "Loads an existing local GGUF through the shipped llama.cpp server"]
-fn bundled_runtime_inference() {
-    let (_tmp, s) = notebook();
+fn installed_gguf() -> std::path::PathBuf {
     let base = sources::home().join(".ollama/models");
     let manifest: Value = serde_json::from_slice(
         &std::fs::read(base.join("manifests/registry.ollama.ai/library/llama3.2/3b")).unwrap(),
@@ -708,9 +748,14 @@ fn bundled_runtime_inference() {
         .iter()
         .find(|l| l["mediaType"] == "application/vnd.ollama.image.model")
         .unwrap();
-    let path = base
-        .join("blobs")
-        .join(layer["digest"].as_str().unwrap().replace(':', "-"));
+    base.join("blobs")
+        .join(layer["digest"].as_str().unwrap().replace(':', "-"))
+}
+#[test]
+#[ignore = "Loads an existing local GGUF through the shipped llama.cpp server"]
+fn bundled_runtime_inference() {
+    let (_tmp, s) = notebook();
+    let path = installed_gguf();
     let cfg = bundled::use_file(&s, &path).unwrap();
     let reply = models::infer(
         &cfg,
@@ -720,6 +765,97 @@ fn bundled_runtime_inference() {
     );
     bundled::reap(true);
     assert!(reply.unwrap().contains('5'));
+}
+#[test]
+#[ignore = "Quits during a first reading with the packaged runtime and existing local GGUF"]
+fn quitting_a_reading_reaps_the_bundled_model() {
+    use std::{
+        fs,
+        io::{BufRead, BufReader, Write},
+        os::unix::fs::symlink,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().join("notebook");
+    let s = Store::with_key(root.clone(), &[19; 32]).unwrap();
+    app::setup(&s).unwrap();
+    app::action(&s, "mark", &json!({"points":[[0,0],[1,1]]})).unwrap();
+    s.set("model",&json!({"runtime":"Sumi","name":"local-gguf","path":installed_gguf(),"private":root.join(".sumi")})).unwrap();
+    let group = (0..100)
+        .map(|i| format!("paper-{i}"))
+        .find(|g| u8::from_str_radix(&store::hash(g)[..2], 16).unwrap() < 26)
+        .unwrap();
+    sources::add(
+        &s,
+        "example",
+        &group,
+        &now(),
+        "Which paper should we order?",
+        "The cream sheet.",
+    )
+    .unwrap();
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let contents = tmp.path().join("Contents");
+    fs::create_dir_all(contents.join("MacOS")).unwrap();
+    fs::create_dir_all(contents.join("Resources")).unwrap();
+    let runtime = target.join("release/bundle/macos/Sumi.app/Contents/Resources/runtime");
+    assert!(runtime.join("llama-server").is_file());
+    symlink(runtime, contents.join("Resources/runtime")).unwrap();
+    let driver = contents.join("MacOS/sumi");
+    fs::copy(target.join("debug/sumi"), &driver).unwrap();
+    let mut child = Command::new(driver)
+        .arg("--fixture-rpc")
+        .arg("--notebook")
+        .arg(&root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(
+        child.stdin.as_mut().unwrap(),
+        "{}",
+        json!({"operation":"beginFirstReading","args":{"notify":false}})
+    )
+    .unwrap();
+    let mut reply = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut reply)
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&reply).unwrap(),
+        json!({"ok":null})
+    );
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let pid = loop {
+        let p = Command::new("/usr/bin/pgrep")
+            .args(["-P", &child.id().to_string(), "-x", "llama-server"])
+            .output()
+            .unwrap();
+        if p.status.success() {
+            break String::from_utf8(p.stdout).unwrap().trim().to_owned();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "No model process appeared during the first reading"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(child.stdin.take());
+    assert!(child.wait().unwrap().success());
+    let check = Command::new("/bin/ps")
+        .args(["-p", &pid, "-o", "command="])
+        .output()
+        .unwrap();
+    if check.status.success() {
+        let command = String::from_utf8_lossy(&check.stdout);
+        if command.contains(root.join(".sumi/runtime.key").to_str().unwrap()) {
+            let _ = Command::new("/bin/kill").args(["-TERM", &pid]).status();
+        }
+        panic!("The owned model process survived Quit");
+    }
+    assert_eq!(s.get("firstReading").unwrap()["status"], "running");
+    assert!(s.get("reading").unwrap().is_null());
 }
 #[test]
 #[ignore = "Opens an ephemeral loopback port"]

@@ -14,6 +14,9 @@ struct Running {
     token: String,
     last: Instant,
 }
+// Serialize model switches and requests. Keep ownership of the child available
+// to the quit handler while the model loads or an HTTP response is pending.
+static REQUEST: Mutex<()> = Mutex::new(());
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 fn stop(r: &mut Option<Running>) {
     if let Some(mut r) = r.take() {
@@ -22,12 +25,16 @@ fn stop(r: &mut Option<Running>) {
     }
 }
 pub fn reap(force: bool) {
-    if let Ok(mut r) = RUNNING.try_lock() {
-        if force
-            || r.as_ref()
-                .is_some_and(|r| r.last.elapsed() > Duration::from_secs(240))
+    if force {
+        stop(&mut RUNNING.lock().unwrap());
+        return;
+    }
+    if let Ok(_request) = REQUEST.try_lock() {
+        let mut r = RUNNING.lock().unwrap();
+        if r.as_ref()
+            .is_some_and(|r| r.last.elapsed() > Duration::from_secs(240))
         {
-            stop(&mut r)
+            stop(&mut r);
         }
     }
 }
@@ -68,7 +75,11 @@ pub fn infer(cfg: &Value, messages: Value, limit: u32, schema: Option<&Value>) -
             .as_str()
             .ok_or("Missing notebook directory.")?,
     );
+    let _request = REQUEST.lock().unwrap();
     let mut state = RUNNING.lock().unwrap();
+    if crate::quitting() {
+        return Err("Sumi is quitting.".into());
+    }
     let live = state
         .as_mut()
         .is_some_and(|r| r.path == path && r.child.try_wait().ok() == Some(None));
@@ -116,11 +127,25 @@ pub fn infer(cfg: &Value, messages: Value, limit: u32, schema: Option<&Value>) -
             token,
             last: Instant::now(),
         });
-        let r = state.as_mut().unwrap();
+    }
+    let r = state.as_mut().unwrap();
+    r.last = Instant::now();
+    let port = r.port;
+    let token = r.token.clone();
+    drop(state);
+    if !live {
         let start = Instant::now();
         loop {
-            if r.child.try_wait().msg()?.is_some() {
-                return Err("The local runtime could not load this model.".into());
+            {
+                let mut state = RUNNING.lock().unwrap();
+                let r = state.as_mut().ok_or("The local runtime stopped.")?;
+                if r.child.try_wait().msg()?.is_some() {
+                    return Err("The local runtime could not load this model.".into());
+                }
+                if start.elapsed() > Duration::from_secs(80) {
+                    stop(&mut state);
+                    return Err("Model loading timed out.".into());
+                }
             }
             if h.get(&format!("http://127.0.0.1:{port}/health"))
                 .call()
@@ -128,23 +153,17 @@ pub fn infer(cfg: &Value, messages: Value, limit: u32, schema: Option<&Value>) -
             {
                 break;
             }
-            if start.elapsed() > Duration::from_secs(80) {
-                stop(&mut state);
-                return Err("Model loading timed out.".into());
-            }
             std::thread::sleep(Duration::from_millis(150));
         }
     }
-    let r = state.as_mut().unwrap();
-    r.last = Instant::now();
     let mut body =
         json!({"model":cfg["name"],"messages":messages,"temperature":0,"max_tokens":limit});
     if let Some(schema) = schema {
         body["response_format"] = json!({"type":"json_schema","json_schema":{"name":"result","strict":true,"schema":schema}});
     }
     let v: Value = h
-        .post(&format!("http://127.0.0.1:{}/v1/chat/completions", r.port))
-        .set("Authorization", &format!("Bearer {}", r.token))
+        .post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
+        .set("Authorization", &format!("Bearer {token}"))
         .send_json(body)
         .msg()?
         .into_json()

@@ -4,6 +4,7 @@ mod bundled;
 mod catalog;
 mod engine;
 mod exports;
+mod first_reading;
 mod forget;
 mod ghost;
 mod jobs;
@@ -18,7 +19,10 @@ mod sources;
 mod store;
 mod transport;
 mod weights;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use store::*;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -34,9 +38,16 @@ async fn notebook(
     args: serde_json::Value,
 ) -> Res<serde_json::Value> {
     let s = store.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || app::action(&s, &operation, &args))
+    tauri::async_runtime::spawn_blocking(move || dispatch(&s, &operation, &args))
         .await
         .msg()?
+}
+fn dispatch(s: &Arc<Store>, op: &str, args: &serde_json::Value) -> Res<serde_json::Value> {
+    if op == "beginFirstReading" {
+        first_reading::start(s, Some(args["notify"] == true))?;
+        return Ok(serde_json::Value::Null);
+    }
+    app::action(s, op, args)
 }
 fn show(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -51,9 +62,17 @@ fn fresh_sheet(app: &tauri::AppHandle) {
         let _ = app.emit("fresh-sheet", ());
     }
 }
+static QUITTING: AtomicBool = AtomicBool::new(false);
+pub(crate) fn quitting() -> bool {
+    QUITTING.load(Ordering::SeqCst)
+}
+fn shutdown() {
+    QUITTING.store(true, Ordering::SeqCst);
+    bundled::reap(true);
+}
 fn main() {
     let result = run();
-    bundled::reap(true);
+    shutdown();
     if let Err(e) = result {
         eprintln!("Sumi: {e}");
         std::process::exit(1)
@@ -108,7 +127,7 @@ fn run() -> Res<()> {
                     "open" => show(app),
                     "fresh" => fresh_sheet(app),
                     "quit" => {
-                        bundled::reap(true);
+                        shutdown();
                         app.exit(0)
                     }
                     _ => {}
@@ -124,6 +143,7 @@ fn run() -> Res<()> {
             if let Err(e) = transport::start(s.clone()) {
                 let _ = s.set("backgroundIssue", &serde_json::json!(e));
             }
+            first_reading::start(&s, None).map_err(std::io::Error::other)?;
             jobs::start(s.clone());
             let handle = app.handle().clone();
             let db = s.clone();
@@ -177,7 +197,7 @@ fn run() -> Res<()> {
         .msg()?
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
-                bundled::reap(true);
+                shutdown();
             }
             if let tauri::RunEvent::Reopen {
                 has_visible_windows: false,
@@ -207,6 +227,7 @@ fn fixture_rpc(root: std::path::PathBuf, agents: bool) -> Res<()> {
         transport::start_socket(s.clone())?;
     }
     app::setup(&s)?;
+    first_reading::start(&s, None)?;
     let mut arrival = exports::Arrival::default();
     let downloads = s.root.join("Downloads");
     for line in std::io::stdin().lock().lines() {
@@ -243,7 +264,7 @@ fn fixture_rpc(root: std::path::PathBuf, agents: bool) -> Res<()> {
                 "Studio journal · example conversations",
             )
         } else {
-            app::action(&s, op, &req["args"])
+            dispatch(&s, op, &req["args"])
         };
         writeln!(
             std::io::stdout(),

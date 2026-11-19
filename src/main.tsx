@@ -1,4 +1,10 @@
-import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import {createRoot} from 'react-dom/client';
 import {listen} from '@tauri-apps/api/event';
 import '@fontsource/shippori-mincho/latin-400.css';
@@ -28,11 +34,11 @@ function Notebook() {
     [error, fail] = useState('');
   const queue = useRef(Promise.resolve()),
     serial = useRef(0);
-  async function refresh() {
+  const refresh = useCallback(async () => {
     const n = ++serial.current;
     const v = await call('state');
     if (n === serial.current) update(v);
-  }
+  }, []);
   const act: Action = async (op, args = {}) => {
     try {
       await queue.current;
@@ -162,7 +168,12 @@ function Notebook() {
           <Enso size={46} />
         </div>
       ) : !data.setup ? (
-        <Onboarding data={data} act={act} finish={() => act('finish')} />
+        <Onboarding
+          data={data}
+          act={act}
+          refresh={refresh}
+          finish={() => act('finish')}
+        />
       ) : (
         <>
           <div key={place} className="unroll">
