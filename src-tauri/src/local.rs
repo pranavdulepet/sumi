@@ -43,16 +43,10 @@ pub fn vectors() {
         )));
     })
 }
-pub fn fit(s: &Store) -> serde_json::Value {
-    let bytes = std::process::Command::new("/usr/sbin/sysctl")
-        .args(["-n", "hw.memsize"])
-        .output()
-        .ok()
-        .and_then(|r| String::from_utf8(r.stdout).ok()?.trim().parse::<u64>().ok())
-        .unwrap_or(0);
-    let disk = std::process::Command::new("/bin/df")
+pub(crate) fn free_bytes(path: &std::path::Path) -> u64 {
+    std::process::Command::new("/bin/df")
         .args(["-Pk"])
-        .arg(crate::sources::home())
+        .arg(path)
         .output()
         .ok()
         .and_then(|o| {
@@ -66,7 +60,24 @@ pub fn fit(s: &Store) -> serde_json::Value {
                 .ok()
         })
         .unwrap_or(0)
-        * 1024;
+        * 1024
+}
+pub fn fit(s: &Store) -> serde_json::Value {
+    let bytes = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()
+        .and_then(|r| String::from_utf8(r.stdout).ok()?.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let disk = free_bytes(&s.root);
+    let model_dir = std::env::var_os("OLLAMA_MODELS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(crate::sources::home);
+    let ollama_disk = model_dir
+        .ancestors()
+        .find(|p| p.is_dir())
+        .map(free_bytes)
+        .unwrap_or(0);
     let catalog = crate::catalog::installed(s);
     let best = catalog["models"]
         .as_array()
@@ -74,7 +85,7 @@ pub fn fit(s: &Store) -> serde_json::Value {
         .flatten()
         .find(|m| {
             let size = m["bytes"].as_u64().unwrap_or(0);
-            bytes > size * 2 + 4_000_000_000 && disk > size + 4_000_000_000
+            bytes > size * 2 + 4_000_000_000 && ollama_disk > size + 4_000_000_000
         });
     serde_json::json!({"memory":bytes,"freeDisk":disk,"recommendation":best})
 }

@@ -20,6 +20,8 @@ The default notebook lives in `~/Sumi`. Sheets and Scroll entries are readable M
 
 The Seal connects an agent after confirmation and writes one named MCP entry to its configuration. It starts with scoped read access. Some questions can be delegated after enough reviewed answers. Open the agent in the Seal for a line you can add to its instructions. The Seal counts how many automatic answers you reviewed and corrected. Its Repair connection control restores the launcher after an app move and preserves the agent’s permissions. Revoke access disables the credential and removes the launcher Sumi wrote. If another program already uses the name `sumi`, the Seal shows the separate name it registered. The HTTP transport listens on loopback. Installed agents use stdio.
 
+On a Mac without an installed model, the Qwen download shows its progress and resumes interrupted transfers on retry. Sumi checks the complete file against the publisher’s pinned SHA-256 digest before activating it.
+
 The app includes a local llama.cpp server. Model weights are separate. Selecting Ollama or LM Studio uses its local service. Hosted overnight reflection, optional blind prediction and Jev judgments require explicit configuration and a nonzero monthly request allowance. A request limit counts calls. Check the provider for currency limits.
 
 ## Build and test
@@ -45,6 +47,8 @@ The UI test uses Google Chrome, an installed Ollama llama3.2:3b model, a tempora
 ```sh
 cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture --test-threads=1
 ```
+
+To exercise the publisher download in the browser suite, set `SUMI_TEST_MODEL_DOWNLOAD=1`. This optional test downloads 1.12 GB from Hugging Face and removes its temporary notebook and weights afterward.
 
 The source is MIT licensed. Bundled fonts and inference runtime notices are under `licenses/`. See the [verification record](docs/requirements-review.md) for the evidence and outstanding criteria, and [Contributing](CONTRIBUTING.md) for feedback and code changes.
 

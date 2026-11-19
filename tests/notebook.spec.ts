@@ -2,14 +2,23 @@ import {test, expect} from '@playwright/test';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
-import {mkdir, mkdtemp, readFile, readdir, writeFile} from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 async function fixtureNotebook(
   agents = false,
   datedHistory?: {markdown: string; scores: object[]},
+  existingFolder?: string,
 ) {
-  const folder = await mkdtemp(join(tmpdir(), 'sumi-ui-'));
+  const folder = existingFolder ?? (await mkdtemp(join(tmpdir(), 'sumi-ui-')));
   if (datedHistory) {
     await mkdir(join(folder, 'scroll'), {recursive: true});
     await writeFile(join(folder, 'scroll/deciding.md'), datedHistory.markdown);
@@ -703,5 +712,114 @@ test('three weeks of observed choices lead to one user-approved revision', async
     ).toBeTruthy();
   } finally {
     core.stdin.end();
+  }
+});
+
+test('resume the publisher’s real GGUF download and seal a decision without an external runtime', async ({
+  page,
+}) => {
+  test.skip(
+    process.env.SUMI_TEST_MODEL_DOWNLOAD !== '1',
+    'Requires the free 1.12 GB publisher download.',
+  );
+  test.setTimeout(420000);
+  page.setDefaultTimeout(15000);
+  const first = await fixtureNotebook();
+  const partial = join(
+    first.folder,
+    '.sumi',
+    'models',
+    'qwen2.5-1.5b-instruct-q4_k_m.gguf.partial',
+  );
+  let writer: typeof first | undefined, reader: typeof first | undefined;
+  const closed = (core: typeof first.core) =>
+    new Promise<void>(resolve => {
+      if (core.exitCode !== null || core.signalCode !== null) resolve();
+      else core.once('exit', () => resolve());
+    });
+  try {
+    await first.rpc('mark', {
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    });
+    first.core.stdin.write(
+      JSON.stringify({operation: 'downloadBundled', args: {}}) + '\n',
+    );
+    await expect
+      .poll(async () => (await stat(partial).catch(() => null))?.size ?? 0, {
+        timeout: 120000,
+        intervals: [100],
+      })
+      .toBeGreaterThan(4_000_000);
+    first.core.kill('SIGTERM');
+    await closed(first.core);
+    const offset = (await stat(partial)).size;
+    writer = await fixtureNotebook(false, undefined, first.folder);
+    reader = await fixtureNotebook(false, undefined, first.folder);
+    const steps: number[] = [];
+    await page.exposeFunction('sumiTestIPC', async (op: string, args: any) => {
+      if (op === 'models') return []; // Model a Mac with no exposed Ollama or LM Studio.
+      if (op === 'modelDownloadStatus') {
+        const progress = await reader!.rpc(op, args);
+        steps.push(progress.bytes);
+        return progress;
+      }
+      return writer!.rpc(op, args);
+    });
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    await expect(
+      page.getByRole('heading', {name: 'A mind for Sumi.'}),
+    ).toBeVisible();
+    await page.getByRole('button', {name: 'Resume Qwen 2.5 download'}).click();
+    await expect(
+      page.getByRole('progressbar', {name: 'Qwen download'}),
+    ).toBeVisible();
+    await expect(page.getByText('Ready for your notebook.')).toBeVisible({
+      timeout: 240000,
+    });
+    expect(steps).toContain(offset);
+    expect(steps.some(n => n > offset)).toBeTruthy();
+    await page.getByRole('button', {name: 'Continue', exact: true}).click();
+    await page
+      .getByRole('button', {name: 'Continue with a clean page'})
+      .click();
+    await page.getByRole('button', {name: 'Open the Desk'}).click();
+    await page
+      .getByLabel('Desk sheet')
+      .fill('Should I sketch the cover first or start painting right away?');
+    await page.getByRole('button', {name: 'Seal a guess'}).click();
+    await page.getByRole('button', {name: 'Open sealed guess'}).click();
+    await page
+      .getByLabel('Your decision')
+      .fill('I will sketch the cover first.');
+    await page.getByRole('button', {name: 'Break the seal'}).click();
+    const state = await writer.rpc('state');
+    expect(state.model.runtime).toBe('Sumi');
+    expect(state.sealed.guess.trim().length).toBeGreaterThan(0);
+    console.log(
+      'Real bundled download resumed at',
+      offset,
+      'bytes. Model:',
+      state.model.name,
+    );
+  } finally {
+    for (const session of [first, reader, writer]) {
+      if (!session) continue;
+      if (session.core.exitCode === null && session.core.signalCode === null)
+        session.core.stdin.end();
+      await closed(session.core);
+    }
+    await rm(first.folder, {recursive: true, force: true});
   }
 });

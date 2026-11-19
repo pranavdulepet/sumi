@@ -1,16 +1,12 @@
 use crate::store::*;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
     time::{Duration, Instant},
 };
-const FILE: &str = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
-const SIZE: u64 = 1117320736;
-const SHA: &str = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e";
 struct Running {
     child: Child,
     path: PathBuf,
@@ -64,55 +60,6 @@ pub fn use_file(s: &Store, path: &Path) -> Res<Value> {
     crate::models::infer(&config, "Reply with one word.", "Ready?", 6)?;
     s.set("model", &config)?;
     Ok(config)
-}
-pub fn download(s: &Store) -> Res<Value> {
-    let folder = s.root.join(".sumi/models");
-    std::fs::create_dir_all(&folder).msg()?;
-    let dest = folder.join(FILE);
-    if dest.exists() {
-        return use_file(s, &dest);
-    }
-    if crate::local::fit(s)["freeDisk"].as_u64().unwrap_or(0) < SIZE + 3_000_000_000 {
-        return Err("Free another 1.2 GB before downloading this model.".into());
-    }
-    let tmp = folder.join(format!("{}.partial", id()));
-    let result = (|| -> Res<()> {
-        let url =
-            format!("https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/{FILE}");
-        let mut r = ureq::AgentBuilder::new()
-            .timeout_read(Duration::from_secs(90))
-            .build()
-            .get(&url)
-            .call()
-            .map_err(|_| "Model download failed. Check the connection and try again.")?
-            .into_reader();
-        let mut f = std::fs::File::create(&tmp).msg()?;
-        let mut h = Sha256::new();
-        let mut buf = [0u8; 65536];
-        let mut bytes = 0;
-        loop {
-            let n = r.read(&mut buf).msg()?;
-            if n == 0 {
-                break;
-            }
-            bytes += n as u64;
-            if bytes > SIZE {
-                return Err("The model exceeds its published size.".into());
-            }
-            h.update(&buf[..n]);
-            f.write_all(&buf[..n]).msg()?;
-        }
-        if bytes != SIZE || hex::encode(h.finalize()) != SHA {
-            return Err("Model checksum mismatch. The download was discarded.".into());
-        }
-        f.sync_all().msg()?;
-        std::fs::rename(&tmp, &dest).msg()
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result?;
-    use_file(s, &dest)
 }
 pub fn infer(cfg: &Value, messages: Value, limit: u32, schema: Option<&Value>) -> Res<String> {
     let path = PathBuf::from(cfg["path"].as_str().ok_or("Missing model file.")?);

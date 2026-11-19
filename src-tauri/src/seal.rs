@@ -286,7 +286,7 @@ pub fn rpc(s: &Store, token: &str, req: &Value) -> Option<Value> {
         let a = locate(s, token)?;
         match req["method"].as_str().unwrap_or("") {
             "initialize" => Ok(
-                json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"Sumi","version":"1.0.0"}}),
+                json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"Sumi","version":env!("CARGO_PKG_VERSION")}}),
             ),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(tools_list(a["permission"].as_str().unwrap_or("Read"))),

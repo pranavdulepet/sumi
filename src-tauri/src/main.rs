@@ -16,6 +16,7 @@ mod seed;
 mod sources;
 mod store;
 mod transport;
+mod weights;
 use std::sync::Arc;
 use store::*;
 use tauri::{
@@ -50,7 +51,9 @@ fn fresh_sheet(app: &tauri::AppHandle) {
     }
 }
 fn main() {
-    if let Err(e) = run() {
+    let result = run();
+    bundled::reap(true);
+    if let Err(e) = result {
         eprintln!("Sumi: {e}");
         std::process::exit(1)
     }
@@ -169,6 +172,9 @@ fn run() -> Res<()> {
         .build(tauri::generate_context!())
         .msg()?
         .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                bundled::reap(true);
+            }
             if let tauri::RunEvent::Reopen {
                 has_visible_windows: false,
                 ..

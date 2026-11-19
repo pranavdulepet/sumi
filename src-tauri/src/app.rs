@@ -98,7 +98,8 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
         }
         "oauth" => crate::providers::oauth(s, text(a, "provider")?),
         "models" => Ok(json!(models::inventory())),
-        "downloadBundled" => crate::bundled::download(s),
+        "downloadBundled" => crate::weights::download(s),
+        "modelDownloadStatus" => Ok(crate::weights::status(s)),
         "importModel" => {
             if let Some(p) = rfd::FileDialog::new()
                 .add_filter("GGUF model", &["gguf"])

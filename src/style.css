@@ -614,3 +614,16 @@ input[type='range']::-webkit-slider-thumb {
 .blind-readings th { font-weight: 500; }
 .blind-readings th:first-child { text-align: left; }
 .blind-readings small { display: block; overflow-wrap: anywhere; }
+
+.model-download {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .75rem;
+  margin-block: .5rem;
+}
+.model-download progress {
+  width: 9rem;
+  height: .3rem;
+  accent-color: var(--ink);
+}

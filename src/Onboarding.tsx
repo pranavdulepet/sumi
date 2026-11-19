@@ -5,7 +5,8 @@ import {call, type Row, type Action} from './api';
 import {MarkPad, Stroke, Enso} from './Ink';
 export function Models({model, act}: {model: Row | null; act: Action}) {
   const [fit, fitting] = useState<Row | null>(null);
-  const [items, set] = useState<Row[]>([]),
+  const [download, setDownload] = useState<Row | null>(null);
+  const [items, set] = useState<Row[] | null>(null),
     [working, busy] = useState(''),
     [notice, note] = useState('');
   async function refresh() {
@@ -17,16 +18,39 @@ export function Models({model, act}: {model: Row | null; act: Action}) {
   }
   useEffect(() => {
     void refresh();
-    call('fit').then(fitting);
+    call('fit')
+      .then(fitting)
+      .catch(e => note(String(e)));
   }, []);
+  useEffect(() => {
+    let live = true;
+    let timer: number | undefined;
+    async function check() {
+      try {
+        const progress = await call('modelDownloadStatus');
+        if (live) setDownload(progress);
+      } catch (error) {
+        if (live) note(String(error));
+      }
+      if (live && working === 'gguf') timer = window.setTimeout(check, 800);
+    }
+    void check();
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [working]);
+  const installed = items ?? [];
   const recommended =
-    items.find(m => m.name === model?.name && m.runtime === model?.runtime) ??
-    items.find(
+    installed.find(
+      m => m.name === model?.name && m.runtime === model?.runtime,
+    ) ??
+    installed.find(
       m =>
         m.name === 'llama3.2:3b' &&
         (!fit?.memory || m.bytes * 2 + 4e9 < fit.memory),
     ) ??
-    items.find(
+    installed.find(
       m => m.bytes && (!fit?.memory || m.bytes * 2 + 4e9 < fit.memory),
     );
   function modelRow(m: Row) {
@@ -52,7 +76,7 @@ export function Models({model, act}: {model: Row | null; act: Action}) {
           <small>{m.runtime} · on this Mac</small>
         </span>
         <span>
-          {model?.name === m.name
+          {model?.name === m.name && model?.runtime === m.runtime
             ? '✓'
             : working === m.name
               ? 'Verifying…'
@@ -61,44 +85,88 @@ export function Models({model, act}: {model: Row | null; act: Action}) {
       </button>
     );
   }
+  const enoughSpace =
+    !!fit &&
+    !!download &&
+    (download.cached || fit.freeDisk >= download.required);
+  const downloadButton = download && fit && (
+    <div>
+      <button
+        disabled={!!working || !enoughSpace}
+        onClick={async () => {
+          busy('gguf');
+          note('');
+          try {
+            await act('downloadBundled');
+            note('Ready for your notebook.');
+          } catch (e) {
+            note(String(e));
+          } finally {
+            busy('');
+          }
+        }}
+      >
+        {working === 'gguf'
+          ? 'Preparing Qwen on this Mac…'
+          : !enoughSpace
+            ? 'More disk space needed'
+            : download.cached
+              ? 'Set up Qwen 2.5 · up to 1.12 GB'
+              : download.bytes
+                ? 'Resume Qwen 2.5 download'
+                : 'Download Qwen 2.5 · 1.12 GB'}
+      </button>
+      {working === 'gguf' && !download.cached && (
+        <div className="model-download">
+          <progress
+            aria-label="Qwen download"
+            value={download.bytes}
+            max={download.total}
+          />
+          <small>
+            {download.bytes === download.total
+              ? 'Verifying model weights…'
+              : (download.bytes / 1e9).toFixed(2) +
+                ' of ' +
+                (download.total / 1e9).toFixed(2) +
+                ' GB'}
+          </small>
+        </div>
+      )}
+      {!working && !!download.bytes && !download.cached && (
+        <small>
+          {(download.bytes / 1e6).toFixed(0)} MB already on this Mac.
+        </small>
+      )}
+      {!enoughSpace && (
+        <small>
+          Free {((download.required - fit.freeDisk) / 1e9).toFixed(2)} GB more
+          on the notebook’s volume.
+        </small>
+      )}
+    </div>
+  );
   return (
     <section>
       <div className="rows">{recommended && modelRow(recommended)}</div>
-      {items.some(m => m !== recommended) && (
+      {installed.some(m => m !== recommended) && (
         <details>
           <summary>Other installed models</summary>
           <div className="rows">
-            {items.filter(m => m !== recommended).map(modelRow)}
+            {installed.filter(m => m !== recommended).map(modelRow)}
           </div>
         </details>
       )}
-      {!items.length && !model && fit && (
-        <button
-          disabled={!!working || fit.freeDisk < 4200000000}
-          onClick={async () => {
-            busy('gguf');
-            try {
-              await act('downloadBundled');
-              note('Ready for your notebook.');
-            } catch (e) {
-              note(String(e));
-            } finally {
-              busy('');
-            }
-          }}
-        >
-          {working === 'gguf'
-            ? 'Downloading to this Mac…'
-            : fit.freeDisk < 4200000000
-              ? 'More disk space needed'
-              : 'Download Qwen 2.5 · 1.12 GB'}
-        </button>
-      )}
+      {items && !recommended && !model && downloadButton}
       {model?.runtime === 'Sumi' && (
         <p className="small">✓ {model.name} · on this Mac</p>
       )}
       <details>
         <summary>Other ways to think locally</summary>
+        {items &&
+          (!!recommended || model) &&
+          model?.runtime !== 'Sumi' &&
+          downloadButton}
         <div className="inline">
           <button
             disabled={!!working}
@@ -136,7 +204,7 @@ export function Models({model, act}: {model: Row | null; act: Action}) {
             Refresh models
           </button>
           {fit?.recommendation &&
-            !items.some(m => m.name === fit.recommendation.name) && (
+            !installed.some(m => m.name === fit.recommendation.name) && (
               <button
                 disabled={!!working}
                 onClick={async () => {
