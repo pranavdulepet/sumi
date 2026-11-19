@@ -12,6 +12,7 @@ resources="$app/Contents/Resources"
 mkdir -p "$resources/licenses"
 cp LICENSE "$resources/licenses/Sumi.txt"
 cp licenses/*.txt "$resources/licenses/"
+python3 scripts/release-notices.py "$resources/licenses/Dependencies.txt"
 for binary in "$resources/runtime/"*.dylib "$resources/runtime/llama-server"; do
   codesign --force --sign - --timestamp=none "$binary"
 done

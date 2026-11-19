@@ -680,7 +680,9 @@ test('three weeks of observed choices lead to one user-approved revision', async
     await expect(page.getByText(/possible exceptions on 3 days/)).toBeVisible();
     await page.getByText('Read the 3 observations').click();
     await expect(
-      page.getByText('Attend the weekly critique.', {exact: true}),
+      page
+        .locator('blockquote')
+        .filter({hasText: 'Attend the weekly critique.'}),
     ).toBeVisible();
     await page.getByRole('button', {name: 'Change or exception?'}).click();
     const revised = 'I make time for recurring studio critiques.';
