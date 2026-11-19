@@ -8,6 +8,39 @@ fn notebook() -> (tempfile::TempDir, Store) {
     (tmp, s)
 }
 #[test]
+fn margin_quiet_periods_preserve_approval_and_dismissal_history() {
+    let (_tmp, s) = notebook();
+    let key = store::id();
+    let proposal =
+        json!({"id":key,"section":"goals","text":"Protect studio mornings.","confidence":0.9});
+    s.put("proposal", &proposal).unwrap();
+    let dismiss = || app::action(&s, "dismissMargin", &json!({"id":key}));
+    assert!(dismiss().is_err());
+    scroll::change(&s, "stamp", &proposal).unwrap();
+    dismiss().unwrap();
+    let first = s.get("marginMuted").unwrap();
+    let until = |v: &Value| scroll::instant(v.as_str().unwrap()).unwrap();
+    let separation = until(&first[&key]["until"]) - until(&first["quietUntil"]);
+    assert_eq!(separation, chrono::Duration::days(6));
+    assert_eq!(first[&key]["count"], 1);
+    dismiss().unwrap();
+    assert_eq!(s.get("marginMuted").unwrap(), first);
+    // Older notebooks only stored per-goal deadlines.
+    s.set(
+        "marginMuted",
+        &json!({key.as_str(): {"count":1,"until":"2000-01-01T00:00:00Z"}}),
+    )
+    .unwrap();
+    dismiss().unwrap();
+    let again = s.get("marginMuted").unwrap();
+    assert_eq!(again[&key]["count"], 2);
+    assert_eq!(
+        until(&again[&key]["until"]) - until(&again["quietUntil"]),
+        chrono::Duration::days(29)
+    );
+}
+
+#[test]
 fn first_reading_keeps_one_owner_and_retries_only_on_request_after_failure() {
     use std::{
         sync::{atomic::Ordering, Arc},

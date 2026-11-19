@@ -308,20 +308,15 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
         }
         "dismissMargin" => {
             let key = ident(text(a, "id")?)?;
-            if !scroll::approved(s)?
-                .iter()
-                .any(|r| r["id"] == key && r["section"] == "goals" && r["authored"] == true)
-            {
+            let _edit = s.edit.lock().unwrap();
+            if !scroll::approved(s)?.iter().any(|r| {
+                r["id"] == key
+                    && r["section"] == "goals"
+                    && (r["authored"] == true || r["status"] == "stamped")
+            }) {
                 return Err("This goal is no longer available.".into());
             }
-            let mut muted = s.get("marginMuted")?;
-            if !muted.is_object() {
-                muted = json!({});
-            }
-            let count = muted[key]["count"].as_u64().unwrap_or(0) + 1;
-            let days = if count == 1 { 7 } else { 30 };
-            muted[key] = json!({"count":count,"until":(chrono::Utc::now()+chrono::Duration::days(days)).to_rfc3339()});
-            s.set("marginMuted", &muted)?;
+            s.dismiss_margin(key)?;
             Ok(Value::Null)
         }
         "catalogOff" | "marginOff" | "autoStamp" => {

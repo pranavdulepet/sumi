@@ -1,8 +1,9 @@
 import {ExportArrival} from './ExportArrival';
-import {useEffect, useRef, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {type Row, type Action, day} from './api';
 import {useGhostInk} from './useGhostInk';
 import {Stroke} from './Ink';
+import {marginGoal, paragraphAt} from './margin';
 export function Desk({
   data,
   act,
@@ -21,6 +22,9 @@ export function Desk({
     [saved, setSaved] = useState(''),
     [actual, setActual] = useState(''),
     [busy, setBusy] = useState(false),
+    [caret, setCaret] = useState(0),
+    [composing, setComposing] = useState(false),
+    [settled, setSettled] = useState(''),
     [archive, showArchive] = useState(false),
     [breakOpen, open] = useState(false);
   const rev = useRef(0);
@@ -72,19 +76,27 @@ export function Desk({
       clearTimeout(timer);
     };
   }, [text, decision, data.current, sealed?.id, data.model?.name]);
+  const paragraph = paragraphAt(text, caret);
+  useEffect(() => {
+    if (!paragraph.trim() || composing || data.marginOff) {
+      setSettled('');
+      return;
+    }
+    const pause = setTimeout(() => setSettled(paragraph), 700);
+    return () => clearTimeout(pause);
+  }, [paragraph, composing, data.marginOff]);
+  const candidate = useMemo(
+    () => marginGoal(settled, data.entries, data.marginMuted),
+    [settled, data.entries, data.marginMuted],
+  );
   const margin =
     !data.marginOff &&
-    data.entries.find(
-      (e: Row) =>
-        e.section === 'goals' &&
-        e.authored &&
-        !(Date.parse(data.marginMuted?.[e.id]?.until) > Date.now()) &&
-        e.text
-          .toLowerCase()
-          .split(/\W+/)
-          .filter((w: string) => w.length > 4)
-          .some((w: string) => text.toLowerCase().includes(w)),
-    );
+    !composing &&
+    candidate &&
+    (paragraph === settled ||
+      marginGoal(paragraph, [candidate], data.marginMuted))
+      ? candidate
+      : undefined;
   return (
     <main className="page desk">
       <div className="folio">
@@ -142,7 +154,20 @@ export function Desk({
           spellCheck
           value={text}
           {...ink.events}
+          onSelect={e => {
+            ink.events.onSelect();
+            setCaret(e.currentTarget.selectionStart);
+          }}
+          onCompositionStart={() => {
+            setComposing(true);
+            ink.events.onCompositionStart();
+          }}
+          onCompositionEnd={() => {
+            setComposing(false);
+            ink.events.onCompositionEnd();
+          }}
           onChange={e => {
+            setCaret(e.target.selectionStart);
             ink.edit(e.target.value);
             change(e.target.value);
           }}
@@ -259,11 +284,19 @@ export function Desk({
         )
       )}
       {margin && (
-        <aside className="margin-note">
+        <aside className="margin-note" aria-label="Goal from your Scroll">
+          <small>
+            From your Scroll{margin.updated && ' · ' + day(margin.updated)}
+          </small>
           {margin.text}{' '}
           <button
             aria-label="Dismiss margin note"
-            onClick={() => act('dismissMargin', {id: margin.id})}
+            title="Quiet all margin notes for 24 hours"
+            onClick={() => {
+              void act('dismissMargin', {id: margin.id})
+                .then(() => setSaved('Margin notes quiet for 24 hours.'))
+                .catch(e => setError(String(e)));
+            }}
           >
             ×
           </button>

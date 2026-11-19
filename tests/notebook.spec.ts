@@ -1002,6 +1002,89 @@ test('three weeks of observed choices lead to one user-approved revision', async
   }
 });
 
+test('Desk matches approved goals to the active paragraph and remembers a dismissal', async ({
+  page,
+}) => {
+  const {core, rpc, folder} = await fixtureNotebook();
+  try {
+    await rpc('mark', {
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    });
+    await rpc('finish');
+    const first = await rpc('create', {
+      section: 'goals',
+      text: 'Read about studio lighting before buying equipment.',
+    });
+    const strongest = 'Practice studio lighting with portraits.';
+    const id = 'a'.repeat(32);
+    const goals = join(folder, 'scroll/goals.md');
+    await writeFile(
+      goals,
+      (await readFile(goals, 'utf8')) +
+        '\n## Portraits\n' +
+        strongest +
+        '\n<!-- sumi ' +
+        JSON.stringify({
+          id,
+          status: 'stamped',
+          confidence: 0.95,
+          importance: 1,
+          updated: new Date().toISOString(),
+        }) +
+        ' -->\n',
+    );
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.clock.install();
+    await page.goto('/');
+    const sheet = page.getByLabel('Desk sheet');
+    const note = page.getByRole('complementary', {
+      name: 'Goal from your Scroll',
+    });
+    await sheet.fill('Think about next week before bed.');
+    await page.clock.runFor(900);
+    await expect(note).toHaveCount(0);
+    await sheet.fill('Studios and lightings are plurals.');
+    await page.clock.runFor(900);
+    await expect(note).toHaveCount(0);
+    const related = 'Adjust studio lighting for portraits.';
+    await sheet.fill(related + '\nA grocery list for Sunday.');
+    await page.clock.runFor(900);
+    await expect(note).toHaveCount(0);
+    await sheet.press('Meta+ArrowUp');
+    await expect(note).toContainText(strongest);
+    await note.getByRole('button', {name: 'Dismiss margin note'}).click();
+    await expect(
+      page.getByText('Margin notes quiet for 24 hours.'),
+    ).toBeVisible();
+    await page.reload();
+    await sheet.fill('Read about studio lighting before buying equipment.');
+    await page.clock.runFor(900);
+    await expect(note).toHaveCount(0);
+    const muted = (await rpc('state')).marginMuted;
+    await page.clock.setFixedTime(
+      new Date(Date.parse(muted.quietUntil) + 1000),
+    );
+    await sheet.fill('Adjust studio lighting before buying equipment.');
+    await expect(note).toContainText(first.text);
+    await sheet.fill(related);
+    await expect(note).toContainText(first.text);
+  } finally {
+    core.stdin.end();
+  }
+});
+
 test('resume the publisher’s real GGUF download and seal a decision without an external runtime', async ({
   page,
 }) => {

@@ -153,6 +153,39 @@ impl Store {
             .msg()?;
         Ok(())
     }
+    pub fn dismiss_margin(&self, key: &str) -> Res<()> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .msg()?;
+        let stored: Option<String> = tx
+            .query_row("SELECT v FROM kv WHERE k='marginMuted'", [], |r| r.get(0))
+            .optional()
+            .msg()?;
+        let mut muted: Value = serde_json::from_str(stored.as_deref().unwrap_or("{}")).msg()?;
+        if !muted.is_object() {
+            muted = json!({});
+        }
+        let now = Utc::now();
+        if muted[key]["until"]
+            .as_str()
+            .and_then(crate::scroll::instant)
+            .is_some_and(|until| until > now)
+        {
+            return Ok(());
+        }
+        let count = muted[key]["count"].as_u64().unwrap_or(0).saturating_add(1);
+        let days = if count == 1 { 7 } else { 30 };
+        muted[key] =
+            json!({"count": count, "until": (now + chrono::Duration::days(days)).to_rfc3339()});
+        muted["quietUntil"] = json!((now + chrono::Duration::days(1)).to_rfc3339());
+        tx.execute(
+            "INSERT OR REPLACE INTO kv VALUES ('marginMuted', ?)",
+            [muted.to_string()],
+        )
+        .msg()?;
+        tx.commit().msg()
+    }
     pub fn put(&self, kind: &str, v: &Value) -> Res<()> {
         let k = v["id"].as_str().ok_or("Missing record ID")?;
         self.db

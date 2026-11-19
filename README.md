@@ -20,6 +20,8 @@ When you import a ChatGPT archive, Sumi reads the conversation branch selected a
 
 Write a real decision on the Desk and choose **Seal a guess**. Later, enter what you decided, open the seal, and judge the guess. The Mirror records your verdict. Open **Places** or press ⌘1–4 to move among the Desk, Scroll, Mirror and Seal. Option-Space opens a fresh sheet inside Sumi and works globally when macOS grants the shortcut. You can also choose **New Desk Sheet** from Sumi’s menu bar dot.
 
+A margin note can bring back a goal you wrote or stamped when the paragraph you are editing mentions it. Dismissing the note gives you 24 hours of quiet. That goal stays out of the margin for a week after the first dismissal and a month after later ones. You can turn margin notes off in the Seal.
+
 When you return the next morning, the Desk opens a blank sheet. Earlier writing stays under **Sheets**. A waiting question names the agent that asked it. Open that line to answer in the Seal, where the agent can collect your reply.
 
 ## Files you own
