@@ -403,6 +403,10 @@ fn export(s: &Store, source: &str, v: &Value, window: ExportWindow) -> Res<(usiz
     }
     Ok((n, deferred))
 }
+pub fn conversation_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or("");
+    name == "conversations.json" || name.starts_with("conversations-") && name.ends_with(".json")
+}
 #[cfg(test)]
 pub fn ingest(s: &Store, source: &Value) -> Res<usize> {
     ingest_pass(s, source, false).map(|r| r.0)
@@ -449,7 +453,11 @@ pub fn ingest_pass(s: &Store, source: &Value, first: bool) -> Res<(usize, bool)>
         if saved == fingerprint {
             continue;
         }
-        let ext = path.extension().and_then(|x| x.to_str());
+        let ext_name = path
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(str::to_ascii_lowercase);
+        let ext = ext_name.as_deref();
         let is_export = matches!(ext, Some("json" | "zip"));
         if first && !is_export && meta.modified().is_ok_and(|d| d < cutoff) {
             return Ok((n, true));
@@ -517,11 +525,7 @@ pub fn ingest_pass(s: &Store, source: &Value, first: bool) -> Res<(usize, bool)>
                 let mut found = false;
                 for i in 0..z.len() {
                     let f = z.by_index(i).msg()?;
-                    let name = f.name().rsplit('/').next().unwrap_or("");
-                    if (name == "conversations.json"
-                        || name.starts_with("conversations-") && name.ends_with(".json"))
-                        && f.size() < 256_000_000
-                    {
+                    if conversation_file(f.name()) && f.size() < 256_000_000 {
                         let v = serde_json::from_reader(f.take(256_000_000)).msg()?;
                         let (added, older) = export(s, key, &v, window)?;
                         n += added;

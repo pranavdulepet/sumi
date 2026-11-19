@@ -1,3 +1,4 @@
+import {ExportArrival} from './ExportArrival';
 import {useEffect, useRef, useState} from 'react';
 import {type Row, type Action, day} from './api';
 import {useGhostInk} from './useGhostInk';
@@ -117,6 +118,7 @@ export function Desk({
           ))}
         </div>
       )}
+      <ExportArrival request={data.requestedExport} act={act} desk />
       {waiting.length > 0 && (
         <button className="waiting" onClick={openSeal}>
           {waiting.length} {waiting.length === 1 ? 'question' : 'questions'}

@@ -306,6 +306,63 @@ fn transcript_preview_reads_the_tail_and_backfill_recovers_the_boundary_pair() {
 }
 
 #[test]
+fn export_search_only_offers_new_completed_archives_until_consent() {
+    use std::{fs, io::Write, os::unix::fs::symlink};
+    let (tmp, s) = notebook();
+    let downloads = tmp.path().join("Downloads");
+    let mut arrival = exports::Arrival::default();
+    arrival.check(&s, &downloads).unwrap();
+    assert!(s.get("requestedExport").unwrap().is_null());
+    fs::create_dir(&downloads).unwrap();
+    let zip = |path: &Path, member: &str| {
+        let mut out = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        out.start_file(member, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        // Discovery works even when the conversation payload cannot be parsed.
+        out.write_all(b"not conversation JSON").unwrap();
+        out.finish().unwrap();
+    };
+    let previous = downloads.join("previous.zip");
+    zip(&previous, "conversations.json");
+    exports::request(&s).unwrap();
+    let fresh = downloads.join("new.ZIP");
+    zip(&fresh, "history/conversations-001.json");
+    zip(&downloads.join("unrelated.zip"), "conversations-notes.txt");
+    zip(
+        &downloads.join("unfinished.zip.download"),
+        "conversations.json",
+    );
+    fs::write(downloads.join("incomplete.zip"), b"partial transfer").unwrap();
+    let outside = tmp.path().join("outside.zip");
+    zip(&outside, "conversations.json");
+    symlink(&outside, downloads.join("linked.zip")).unwrap();
+    arrival.check(&s, &downloads).unwrap();
+    let waiting = s.get("requestedExport").unwrap();
+    assert_eq!(waiting["offers"], json!([{"name":"new.ZIP","path":fresh}]));
+    assert!(s.list("source").unwrap().is_empty());
+    assert!(exports::accept(&s, &downloads, outside.to_str().unwrap()).is_err());
+    let changes = s.db.lock().unwrap().total_changes();
+    arrival.check(&s, &downloads).unwrap();
+    assert_eq!(s.db.lock().unwrap().total_changes(), changes);
+    exports::cancel(&s).unwrap();
+    arrival.check(&s, &downloads).unwrap();
+    assert!(s.get("requestedExport").unwrap().is_null());
+    assert_eq!(
+        exports::find(&s, &downloads)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    fs::remove_file(&fresh).unwrap();
+    assert!(exports::accept(&s, &downloads, fresh.to_str().unwrap()).is_err());
+    assert!(s.list("source").unwrap().is_empty());
+    exports::accept(&s, &downloads, previous.to_str().unwrap()).unwrap();
+    assert_eq!(exports::find(&s, &downloads).unwrap(), json!([]));
+}
+
+#[test]
 fn recent_export_reading_resumes_older_and_undated_replies_after_reopen() {
     use chrono::{Duration, Utc};
     use std::io::Write;

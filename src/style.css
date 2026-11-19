@@ -267,6 +267,10 @@ small {
   width: 100%;
   flex-wrap: wrap;
 }
+.export-name {
+  overflow-wrap: anywhere;
+  text-align: left;
+}
 .row .sub {
   flex-basis: 100%;
 }

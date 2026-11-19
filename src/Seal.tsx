@@ -357,7 +357,12 @@ export function Seal({
       <section>
         <details>
           <summary>Sources and readings</summary>
-          <Sources sources={data.sources} act={act} confirmRemove />
+          <Sources
+            sources={data.sources}
+            request={data.requestedExport}
+            act={act}
+            confirmRemove
+          />
           <button
             className="primary"
             disabled={busy}

@@ -76,7 +76,7 @@ pub fn state(s: &Store) -> Res<Value> {
     let mut surprises = crate::mirror::reviews(&scores, &entries, chrono::Utc::now());
     surprises.truncate(3);
     Ok(
-        json!({"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
+        json!({"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
     )
 }
 pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
@@ -370,59 +370,20 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             Ok(Value::Null)
         }
         "surprise" => crate::mirror::respond(s, a),
-        "exports" => {
-            let dir = sources::home().join("Downloads");
-            let recent = std::fs::read_dir(dir)
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter_map(Result::ok)
-                .filter(|e| {
-                    e.file_name().to_string_lossy().ends_with(".zip")
-                        && e.metadata()
-                            .and_then(|m| m.modified())
-                            .ok()
-                            .and_then(|d| d.elapsed().ok())
-                            .is_some_and(|d| d.as_secs() < 7 * 86400)
-                })
-                .filter_map(|e| {
-                    let path = e.path();
-                    let file = std::fs::File::open(&path).ok()?;
-                    let z = zip::ZipArchive::new(file).ok()?;
-                    if !z.file_names().any(|n| {
-                        n.rsplit('/')
-                            .next()
-                            .is_some_and(|f| f.starts_with("conversations") && f.ends_with(".json"))
-                    }) {
-                        return None;
-                    }
-                    Some(json!({"path":path,"name":e.file_name().to_string_lossy()}))
-                })
-                .collect::<Vec<_>>();
-            Ok(json!(recent))
-        }
+        "exports" => crate::exports::find(s, &sources::home().join("Downloads")),
         "acceptExport" => {
-            let options = action(s, "exports", &Value::Null)?;
-            let p = text(a, "path")?;
-            if !options.as_array().unwrap().iter().any(|v| v["path"] == p) {
-                return Err("Export is unavailable.".into());
-            }
-            register(
-                s,
-                &hash(p)[..32],
-                Path::new(p),
-                Path::new(p)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("Chat export"),
-            )
+            crate::exports::accept(s, &sources::home().join("Downloads"), text(a, "path")?)
         }
+        "cancelExport" => crate::exports::cancel(s),
         "exportLink" => {
-            std::process::Command::new("/usr/bin/open")
+            let opened = std::process::Command::new("/usr/bin/open")
                 .arg("https://privacy.openai.com/")
-                .spawn()
+                .status()
                 .msg()?;
-            Ok(Value::Null)
+            if !opened.success() {
+                return Err("Couldn’t open the export page.".into());
+            }
+            crate::exports::request(s)
         }
         "openFolder" => {
             std::process::Command::new("/usr/bin/open")

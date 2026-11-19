@@ -1,5 +1,5 @@
 import {test, expect} from '@playwright/test';
-import {spawn} from 'node:child_process';
+import {execFileSync, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
 import {
@@ -7,6 +7,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   writeFile,
@@ -225,6 +226,119 @@ test('first reading shows a recent reply and leaves older history for idle time'
     await expect(page.getByText(/will continue this reading/)).toBeVisible();
   } finally {
     core.stdin.end();
+  }
+});
+
+test('a requested export arrives after reopening and waits for consent', async ({
+  page,
+}) => {
+  let notebook = await fixtureNotebook();
+  const {folder} = notebook;
+  const downloads = join(folder, 'Downloads');
+  try {
+    await mkdir(downloads);
+    await notebook.rpc('mark', {
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    });
+    await notebook.rpc('finish');
+    await page.exposeFunction('sumiTestIPC', (op: string, args: object) =>
+      notebook.rpc(op, args),
+    );
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    await page.getByLabel('Desk sheet').fill('Keep this draft open.');
+    await expect(page.getByText('Saved', {exact: true})).toBeVisible();
+    await page.keyboard.press('Meta+4');
+    await page.getByText('Sources and readings', {exact: true}).click();
+    await page.getByRole('button', {name: 'Request ChatGPT history ↗'}).click();
+    await expect(
+      page.getByText('Waiting for your chat export in Downloads.'),
+    ).toBeVisible();
+    await page.getByRole('button', {name: 'Stop looking'}).click();
+    await expect(page.getByRole('button', {name: 'Stop looking'})).toHaveCount(
+      0,
+    );
+    await page.getByRole('button', {name: 'Request ChatGPT history ↗'}).click();
+    await expect(
+      page.getByRole('button', {name: 'Stop looking'}),
+    ).toBeVisible();
+    notebook.core.stdin.end();
+    await new Promise<void>(resolve =>
+      notebook.core.once('close', () => resolve()),
+    );
+    let group = 'print-review';
+    while (createHash('sha256').update(group).digest()[0] < 52) group += 'x';
+    const part = join(folder, 'conversations-01.json');
+    await writeFile(
+      part,
+      JSON.stringify([
+        {
+          uuid: group,
+          chat_messages: [
+            {sender: 'assistant', text: 'Which paper feels right?'},
+            {
+              sender: 'human',
+              text: 'The cream sheet.',
+              created_at: new Date().toISOString(),
+            },
+          ],
+        },
+      ]),
+    );
+    const filename = 'cafe'.repeat(16) + '-history.ZIP';
+    const archive = join(downloads, filename);
+    execFileSync('/usr/bin/zip', ['-q', '-j', archive, part]);
+    await rename(archive, archive + '.download');
+    notebook = await fixtureNotebook(false, undefined, folder);
+    await page.reload();
+    await expect(page.getByLabel('Desk sheet')).toHaveValue(
+      'Keep this draft open.',
+    );
+    const offer = page.getByRole('button', {
+      name: `Add ${filename} to Sumi`,
+    });
+    await expect(offer).toHaveCount(0);
+    await rename(archive + '.download', archive);
+    // Returning to the window refreshes the notebook just as in the native app.
+    await expect(async () => {
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect(offer).toBeVisible({timeout: 800});
+    }).toPass({timeout: 15000});
+    expect((await notebook.rpc('state')).sources).toEqual([]);
+    expect((await notebook.rpc('read')).training).toBe(0);
+    await page.setViewportSize({width: 520, height: 560});
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(520);
+    await offer.click();
+    await expect(
+      page.getByText(`Added ${filename} to your sources.`),
+    ).toBeVisible();
+    await expect(page.getByLabel('Desk sheet')).toHaveValue(
+      'Keep this draft open.',
+    );
+    await page.keyboard.press('Meta+4');
+    await page.getByText('Sources and readings', {exact: true}).click();
+    await page.getByRole('button', {name: 'Read selected sources'}).click();
+    await expect
+      .poll(async () => (await notebook.rpc('state')).reading?.training)
+      .toBe(1);
+    const state = await notebook.rpc('state');
+    expect(state.requestedExport).toBeNull();
+    expect(state.sources.map((s: {path: string}) => s.path)).toEqual([archive]);
+  } finally {
+    notebook.core.stdin.end();
   }
 });
 

@@ -3,6 +3,7 @@ mod app;
 mod bundled;
 mod catalog;
 mod engine;
+mod exports;
 mod forget;
 mod ghost;
 mod jobs;
@@ -130,9 +131,12 @@ fn run() -> Res<()> {
                 let mut last_revision = (0, 0);
                 let mut disk_edits = scroll::DiskEdits::default();
                 let mut tray_waiting = false;
+                let mut arrival = exports::Arrival::default();
+                let downloads = sources::home().join("Downloads");
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(15));
                     bundled::reap(false);
+                    let _ = arrival.check(&db, &downloads);
                     if let Ok(waiting) = db.agent_waiting() {
                         if waiting != tray_waiting {
                             if let Some(t) = handle.tray_by_id("sumi") {
@@ -203,12 +207,23 @@ fn fixture_rpc(root: std::path::PathBuf, agents: bool) -> Res<()> {
         transport::start_socket(s.clone())?;
     }
     app::setup(&s)?;
+    let mut arrival = exports::Arrival::default();
+    let downloads = s.root.join("Downloads");
     for line in std::io::stdin().lock().lines() {
         let req: serde_json::Value = serde_json::from_str(&line.msg()?).msg()?;
         let op = req["operation"].as_str().unwrap_or("");
         // Keep a fixture connection inside its temporary notebook even if a UI test
         // clicks a real agent's Connect button.
-        let result = if op == "connect" {
+        if op == "state" {
+            arrival.check(&s, &downloads)?;
+        }
+        let result = if op == "exportLink" {
+            exports::request(&s)
+        } else if op == "exports" {
+            exports::find(&s, &downloads)
+        } else if op == "acceptExport" {
+            exports::accept(&s, &downloads, req["args"]["path"].as_str().unwrap_or(""))
+        } else if op == "connect" {
             seal::connect(
                 &s,
                 req["args"]["name"].as_str().unwrap_or(""),

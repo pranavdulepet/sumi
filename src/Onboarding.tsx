@@ -1,3 +1,4 @@
+import {ExportArrival} from './ExportArrival';
 import {ConnectAgents} from './Seal';
 import {Providers} from './Providers';
 import {useState, useEffect} from 'react';
@@ -238,15 +239,17 @@ export function Models({model, act}: {model: Row | null; act: Action}) {
 }
 export function Sources({
   sources,
+  request,
   act,
   confirmRemove = false,
 }: {
   sources: Row[];
+  request?: Row;
   act: Action;
   confirmRemove?: boolean;
 }) {
   const [showMessages, consent] = useState(false),
-    [exports, load] = useState<Row[]>([]);
+    [exports, load] = useState<Row[] | null>(null);
   const [found, set] = useState<Row[]>([]),
     [remove, ask] = useState('');
   useEffect(() => {
@@ -274,7 +277,7 @@ export function Sources({
           ))}
         {sources.map(s => (
           <div className="row" key={s.id}>
-            <span>
+            <span className="export-name">
               {s.label}
               <small>Included in your reading</small>
             </span>
@@ -308,22 +311,52 @@ export function Sources({
             Choose notes folder
           </button>
         )}
-        <button onClick={() => call('exportLink')}>
-          Request ChatGPT history ↗
-        </button>
-        <button onClick={async () => load(await call('exports'))}>
+        {!request && (
+          <button onClick={() => void act('exportLink').catch(() => {})}>
+            Request ChatGPT history ↗
+          </button>
+        )}
+        <button
+          onClick={() =>
+            void act('exports')
+              .then(load)
+              .catch(() => {})
+          }
+        >
           Find downloaded exports
         </button>
       </div>
-      {exports.map(v => (
-        <button
-          className="row"
-          key={v.path}
-          onClick={() => act('acceptExport', {path: v.path})}
-        >
-          Read {v.name}
-        </button>
-      ))}
+      {!request && (
+        <p className="small">
+          Requesting history lets Sumi look for the ZIP in Downloads. You choose
+          whether to add it.
+        </p>
+      )}
+      <ExportArrival request={request} act={act} />
+      {exports?.length === 0 && (
+        <p className="small" role="status">
+          No new chat exports found in Downloads.
+        </p>
+      )}
+      {exports
+        ?.filter(
+          v =>
+            !sources.some(s => s.path === v.path) &&
+            !request?.offers?.some((r: Row) => r.path === v.path),
+        )
+        .map(v => (
+          <button
+            className="row export-name"
+            key={v.path}
+            onClick={() =>
+              void act('acceptExport', {path: v.path})
+                .then(() => load(null))
+                .catch(() => {})
+            }
+          >
+            Add {v.name} to Sumi
+          </button>
+        ))}
       {confirmRemove && !sources.some(s => s.id === 'messages') && (
         <details>
           <summary>Include sent Messages</summary>
@@ -447,7 +480,11 @@ export function Onboarding({
             </div>
           ) : (
             <>
-              <Sources sources={data.sources} act={act} />
+              <Sources
+                sources={data.sources}
+                request={data.requestedExport}
+                act={act}
+              />
               {data.sources.length > 0 && (
                 <label className="check">
                   <input

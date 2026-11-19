@@ -12,6 +12,8 @@ Draw a mark or choose the keyboard-accessible stroke. Pick an installed local mo
 
 The first reading prioritizes replies from the last 90 days. For a long coding session, it starts near the end so your latest decisions can reach the notebook first. Sumi picks up the rest while your Mac is idle and plugged in.
 
+Choose **Request ChatGPT history** to open the export page. Sumi then watches Downloads for a completed chat archive. You can keep writing or quit Sumi while you wait. When the file arrives, choose whether to add it from the Desk or Sources. **Stop looking** cancels the request.
+
 When you import a ChatGPT archive, Sumi reads the conversation branch selected at export time. If the export omits the selection, Sumi reads the shared history up to the first fork. To replace a previously imported archive and its learned history, open **Seal**, remove that source, confirm **Forget source**, then import the archive again.
 
 Write a real decision on the Desk and choose **Seal a guess**. Later, enter what you decided, open the seal, and judge the guess. The Mirror records your verdict. Open **Places** or press ⌘1–4 to move among the Desk, Scroll, Mirror and Seal. Option-Space opens a fresh sheet inside Sumi and works globally when macOS grants the shortcut. You can also choose **New Desk Sheet** from Sumi’s menu bar dot.
