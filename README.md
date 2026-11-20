@@ -2,7 +2,7 @@
 
 Sumi is a personal conversation app for Apple Silicon Macs. Tell it “My printmaking project is called Orchard.” Later, correct the name to “North Window.” Open a fresh sheet and ask it to draft an invitation. It can use the new name, show you the dated memory behind the answer, and let you change it again.
 
-[Download Sumi for Mac](https://github.com/pranavdulepet/sumi/releases/tag/mac-1.0.8) · [Draw on the homepage](https://pranavdulepet.github.io/sumi/) · [Watch ten short walkthroughs](docs/walkthroughs.md) · [Build from source](docs/development.md)
+[Download Sumi for Mac](https://github.com/pranavdulepet/sumi/releases/tag/mac-1.0.9) · [Draw on the homepage](https://pranavdulepet.github.io/sumi/) · [Watch ten short walkthroughs](docs/walkthroughs.md) · [Build from source](docs/development.md)
 
 ## Start a conversation
 
@@ -20,7 +20,7 @@ A red mark beside an answer opens the memory and its date. **Not true anymore** 
 
 A standing instruction can become a named skill straight away. Similar requests on three distinct days, or positive feedback after a multi-step task, can lead to a skill during idle time. Skills are portable Markdown files. Sumi can revise them with you and archive learned skills after 60 days without use.
 
-While the Mac is idle and plugged in, Sumi can compare a proposed memory with the existing one by predicting later replies. A worse aggregate score keeps the existing memory. Direct corrections take effect immediately. Settings shows the local measurements and how many observations they are based on.
+While the Mac is idle and plugged in, Sumi can compare a proposed memory with the existing one by predicting later replies. A worse aggregate score keeps the existing memory. Direct corrections take effect immediately. In Settings, open **Your notebook → Review local measures** to compare two seven-day periods. Choose the final date of your trial to see how many days you used Sumi and how many replies included a clarifying follow-up. Earlier conversations already on this Mac count toward the comparison.
 
 ## Models and privacy
 
