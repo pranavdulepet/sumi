@@ -1795,6 +1795,18 @@ test('read a workshop schedule, follow up from the file, then correct a dated pr
     await expect(
       page.getByText('I am working on the autumn exhibition.', {exact: true}),
     ).toBeVisible();
+    await page.keyboard.press('Alt+Space');
+    await expect(field).toBeVisible();
+    await field.fill('What did you say about bookbinding in our previous chat?');
+    await field.press('Enter');
+    const recalled = page.locator('.exchange').last();
+    await expect(recalled.locator('.reply')).toContainText(/bookbinding/i, {timeout: 90000});
+    await recalled.locator('.receipt summary').click();
+    const passage = recalled
+      .locator('.receipt blockquote')
+      .filter({hasText: /bookbinding/i})
+      .first();
+    await expect(passage).toContainText('Assistant ·');
     await page.keyboard.press('Meta+,');
     await page.getByText('Your notebook', {exact: true}).click();
     await page.getByRole('button', {name: 'Review local measures'}).click();

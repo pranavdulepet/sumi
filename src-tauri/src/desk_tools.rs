@@ -166,33 +166,93 @@ fn numbers(text: &str) -> Vec<f64> {
         })
         .collect()
 }
-fn historical_question(q: &str) -> bool {
-    let q = q.to_lowercase();
+pub fn archive_question(q: &str) -> bool {
+    let lower = q.to_lowercase();
     [
-        "i mentioned",
-        "i told you",
-        "we discussed",
-        "originally",
-        "used to",
-        "over time",
-        "how did that change",
-        "how has",
-        "what changed",
-        "history of",
-        "timeline",
-        "what did i",
-        "what have i",
-        "last time",
-        "did i say",
-        "did i decide",
-        "remind me",
-        "in my notebook",
         "imported chat",
+        "previous chat",
         "past chat",
         "chat export",
+        "old chat",
     ]
     .iter()
-    .any(|v| q.contains(v))
+    .any(|cue| lower.contains(cue))
+}
+
+fn asked_speaker(question: &str) -> &'static str {
+    static ASSISTANT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+        r"(?i)\b(?:(?:did|had|have) (?:you|sumi|the assistant) (?:say|suggest|recommend|call|write|answer|reply|mention)|(?:you|sumi|the assistant) (?:said|suggested|recommended|wrote|replied|called|mentioned)|your (?:previous|earlier) (?:answer|reply|recommendation))\b").unwrap()
+    });
+    static HUMAN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+        r"(?i)\b(?:(?:did|had|have) i (?:say|ask|decide|mention|call|write|tell)|i (?:said|asked|decided|mentioned|called|wrote|told))\b").unwrap()
+    });
+    if ASSISTANT.is_match(question) {
+        "assistant"
+    } else if !HUMAN.is_match(question) && archive_question(question) {
+        "both"
+    } else {
+        "user"
+    }
+}
+
+// A match can occur well after the first paragraph of an old message.
+fn passage_excerpt(text: &str, query: &std::collections::HashSet<String>) -> String {
+    const LENGTH: usize = 650;
+    let chars: Vec<_> = text.chars().collect();
+    if chars.len() <= LENGTH {
+        return text.to_owned();
+    }
+    let last = chars.len() - LENGTH;
+    let mut best = (0, 0);
+    for start in (0..last).step_by(LENGTH / 2).chain(std::iter::once(last)) {
+        let window: String = chars[start..start + LENGTH].iter().collect();
+        let score = words(&window).intersection(query).count();
+        if score > best.0 {
+            best = (score, start);
+        }
+    }
+    let start = best.1;
+    let mut excerpt: String = chars[start..start + LENGTH].iter().collect();
+    if start > 0 {
+        excerpt.insert(0, '…');
+    }
+    if start < last {
+        excerpt.push('…');
+    }
+    excerpt
+}
+
+fn historical_question(q: &str) -> bool {
+    let q = q.to_lowercase();
+    archive_question(&q)
+        || asked_speaker(&q) == "assistant"
+        || [
+            "i mentioned",
+            "i told you",
+            "we discussed",
+            "originally",
+            "used to",
+            "over time",
+            "how did that change",
+            "how has",
+            "what changed",
+            "history of",
+            "timeline",
+            "what did i",
+            "what have i",
+            "last time",
+            "did i say",
+            "did i decide",
+            "remind me",
+            "in my notebook",
+            "imported chat",
+            "past chat",
+            "chat export",
+        ]
+        .iter()
+        .any(|v| q.contains(v))
 }
 pub fn wants_timeline(q: &str) -> bool {
     let q = q.to_lowercase();
@@ -544,23 +604,35 @@ pub fn recall(
     }
     let db = s.db.lock().unwrap();
     // Older notebooks have no per-turn clock. Retain their sheet date as approximate provenance.
-    let mut stmt=db.prepare("SELECT words, at, approximate, role FROM (
-        SELECT json_extract(t.value,'$.question') words, COALESCE(json_extract(t.value,'$.at'),json_extract(p.v,'$.date')) at, json_extract(t.value,'$.at') IS NULL approximate, 'user' role FROM docs c JOIN docs p ON p.kind='sheet' AND p.id=c.id JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND (?1=0 OR (COALESCE(json_extract(c.v,'$.private'),0)=0 AND COALESCE(json_extract(p.v,'$.private'),0)=0))
-        UNION ALL SELECT body,stamp,0,role FROM imported_messages WHERE ?1=0 AND (?2 OR role='user')
-        ) WHERE EXISTS(SELECT 1 FROM json_each(?3) term WHERE instr(lower(words),term.value)>0)").msg()?;
-    let include_assistant = question.to_lowercase().contains("say")
-        && question.to_lowercase().contains("assistant")
-        || question.to_lowercase().contains("past chat")
-        || question.to_lowercase().contains("imported");
+    let mut stmt = db.prepare("WITH turns AS (
+        SELECT t.value AS turn, coalesce(json_extract(t.value,'$.at'),json_extract(p.v,'$.date')) AS stamp,
+            json_extract(t.value,'$.at') IS NULL AS approximate, c.v AS chat
+        FROM docs c JOIN docs p ON p.kind='sheet' AND p.id=c.id JOIN json_each(c.v,'$.turns') t
+        WHERE c.kind='chat' AND (?1=0 OR (coalesce(json_extract(c.v,'$.private'),0)=0
+            AND coalesce(json_extract(c.v,'$.networkClosed'),0)=0 AND coalesce(json_extract(p.v,'$.private'),0)=0)))
+        SELECT body,stamp,approximate,role,origin FROM (
+            SELECT json_extract(turn,'$.question') AS body, stamp, approximate, 'user' AS role, 'sheet' AS origin FROM turns WHERE ?2!='assistant'
+            UNION ALL SELECT json_extract(turn,'$.reply'), stamp, approximate, 'assistant','sheet' FROM turns
+                WHERE ?2!='user' AND (?1=0 OR NOT EXISTS (SELECT 1 FROM json_each(chat,'$.turns') f WHERE json_array_length(f.value,'$.files')>0 OR json_extract(f.value,'$.oneQuestion')=1))
+            UNION ALL SELECT body,stamp,0,role,'import' FROM imported_messages WHERE ?1=0 AND (?2='both' OR role=?2)
+        ) WHERE (?4=0 OR origin='import') AND EXISTS (SELECT 1 FROM json_each(?3) term WHERE instr(lower(body),term.value)>0)").msg()?;
+    let lower = question.to_lowercase();
+    let imports_only = lower.contains("imported chat") || lower.contains("chat export");
     let rows = stmt
         .query_map(
-            rusqlite::params![hosted, include_assistant, json!(terms).to_string()],
+            rusqlite::params![
+                hosted,
+                asked_speaker(question),
+                json!(terms).to_string(),
+                imports_only
+            ],
             |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, bool>(2)?,
                     r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
                 ))
             },
         )
@@ -568,7 +640,7 @@ pub fn recall(
     let mut candidates = vec![];
     let mut frequency = std::collections::HashMap::new();
     for row in rows {
-        let (text, date, approximate, role) = row.msg()?;
+        let (text, date, approximate, role, origin) = row.msg()?;
         let Ok(stamp) = DateTime::parse_from_rfc3339(&date) else {
             continue;
         };
@@ -598,7 +670,12 @@ pub fn recall(
         for term in &shared {
             *frequency.entry(term.clone()).or_insert(0usize) += 1;
         }
-        candidates.push((shared,recency+important,stamp,json!({"role":role,"when":date,"approximate":approximate,"words":text.chars().take(650).collect::<String>()})));
+        candidates.push((
+            shared,
+            recency + important,
+            stamp,
+            json!({"role":role,"when":date,"approximate":approximate,"words":text,"origin":origin}),
+        ));
     }
     // Use the person's own topic first. Planner-supplied synonyms are a fallback
     // when none of the passages use the original wording.
@@ -629,7 +706,16 @@ pub fn recall(
     }
     hits.truncate(5);
     hits.sort_by_key(|v| v.1);
-    Ok(hits.into_iter().map(|v| v.2).collect())
+    Ok(hits
+        .into_iter()
+        .map(|(_, _, mut passage)| {
+            passage["words"] = json!(passage_excerpt(
+                passage["words"].as_str().unwrap_or(""),
+                &terms
+            ));
+            passage
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -665,6 +751,55 @@ mod tests {
                 .len(),
             3
         );
+    }
+    #[test]
+    fn earlier_assistant_replies_keep_their_speaker_and_the_matching_passage() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::with_key(dir.path().into(), &[17; 32]).unwrap();
+        crate::app::setup(&s).unwrap();
+        let sheet = s.new_sheet().unwrap();
+        let at = Utc::now() - Duration::hours(2);
+        let long_reply = format!(
+            "{} Try the copperplate workshop on Sunday.",
+            "静かな場所です。".repeat(150)
+        );
+        let mut chat = json!({"id":sheet,"private":false,"turns":[{"at":at,"question":"Is copperplate a good fit?","reply":long_reply}]});
+        s.put("chat", &chat).unwrap();
+        let replies = recall(
+            &s,
+            "copperplate",
+            true,
+            Utc::now(),
+            "What did you recommend for copperplate?",
+        )
+        .unwrap();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0]["role"], "assistant");
+        assert!(replies[0]["words"]
+            .as_str()
+            .unwrap()
+            .contains("workshop on Sunday"));
+        let mine = recall(
+            &s,
+            "copperplate",
+            false,
+            Utc::now(),
+            "What did I ask about copperplate?",
+        )
+        .unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0]["role"], "user");
+        chat["turns"][0]["files"] = json!([{"name":"workshops.pdf"}]);
+        s.put("chat", &chat).unwrap();
+        assert!(recall(
+            &s,
+            "copperplate",
+            true,
+            Utc::now(),
+            "What did you recommend?"
+        )
+        .unwrap()
+        .is_empty());
     }
     #[test]
     fn arithmetic_and_civil_dates() {

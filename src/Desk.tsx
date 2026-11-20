@@ -387,11 +387,16 @@ export function Desk({
             {t.timeline?.length > 0 && (
               <ol
                 className="memory-timeline"
-                aria-label="Your earlier instructions"
+                aria-label={
+                  t.archiveLookup
+                    ? 'Earlier conversation excerpts'
+                    : 'Your earlier instructions'
+                }
               >
                 {t.timeline.map((p: Row, i: number) => (
                   <li key={i}>
                     <time dateTime={p.when}>
+                      {p.role === 'assistant' ? 'Assistant · ' : 'You · '}
                       {p.approximate ? 'Sheet dated ' : ''}
                       {new Date(p.when).toLocaleString(undefined, {
                         month: 'short',
@@ -424,6 +429,7 @@ export function Desk({
                 !t.image &&
                 !t.imagePrompt &&
                 !t.web &&
+                !t.archiveLookup &&
                 !t.timeline?.length && (
                   <button
                     disabled={busy}
@@ -471,6 +477,7 @@ export function Desk({
                   {tool.passages?.map((p: Row, i: number) => (
                     <blockquote key={i}>
                       <small>
+                        {p.role === 'assistant' ? 'Assistant · ' : 'You · '}
                         {p.approximate ? 'Sheet dated ' : ''}
                         {new Date(p.when).toLocaleString()}
                       </small>

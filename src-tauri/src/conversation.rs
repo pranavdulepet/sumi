@@ -254,8 +254,13 @@ fn mirror(s: &Store, chat: &Value) -> Res<()> {
         }
         for passage in turn["timeline"].as_array().into_iter().flatten() {
             text.push_str(&format!(
-                "> {} · {}\n\n",
+                "> {} · {}{}\n\n",
                 passage["when"].as_str().unwrap_or(""),
+                if passage["role"] == "assistant" {
+                    "Assistant: "
+                } else {
+                    ""
+                },
                 passage["words"].as_str().unwrap_or("")
             ));
         }
@@ -326,6 +331,7 @@ fn recalled_name(q: &str, turns: &[Value], recall: Option<&Value>) -> Option<Str
         .and_then(|r| r["passages"].as_array())
         .into_iter()
         .flatten()
+        .filter(|p| p["role"] != "assistant")
         .filter_map(|p| p["words"].as_str());
     earlier
         .chain(recalled)
@@ -707,7 +713,10 @@ pub fn regenerate(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value
         mirror(s, &chat)?;
         return Ok(Value::Null);
     }
-    if !old["web"].is_null() || old["timeline"].as_array().is_some_and(|v| !v.is_empty()) {
+    if old["archiveLookup"] == true
+        || !old["web"].is_null()
+        || old["timeline"].as_array().is_some_and(|v| !v.is_empty())
+    {
         return Err("Ask a follow-up to refine these sources.".into());
     }
     let primary = s.get("model")?;
@@ -826,9 +835,7 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
         });
     let privacy_request = uses_private_memory
         || private_request(q)
-        || (["imported chat", "past chat", "chat export"]
-            .iter()
-            .any(|term| q.to_lowercase().contains(term)))
+        || desk_tools::archive_question(q)
         || (has_files
             && (a["shareFiles"] != true
                 || files.iter().any(|f| {
@@ -875,6 +882,24 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
     } else {
         Some(primary.clone())
     };
+    // Searching for the original words is useful even on a Mac without local weights.
+    // Keep the result and subsequent turns on this sheet out of hosted history.
+    if local.is_none() && desk_tools::archive_question(q) && !has_files {
+        let passages = desk_tools::recall(s, q, false, at.with_timezone(&chrono::Utc), q)?;
+        let reply = if passages.is_empty() {
+            "I couldn’t find a matching passage in your earlier conversations."
+        } else {
+            "Here are the matching words from your earlier conversations."
+        };
+        let turn = json!({"id":key,"at":at.to_rfc3339(),"question":q,"reply":reply,"lane":"private","runtime":"Sumi","model":"Notebook search","notes":[],"rules":[],"tools":[],"timeline":passages,"archiveLookup":true});
+        chat["turns"].as_array_mut().unwrap().push(turn);
+        chat["private"] = json!(true);
+        chat["networkClosed"] = json!(true);
+        chat["pendingFile"] = json!(true);
+        s.put("chat", &chat)?;
+        finish_turn(s, &mut chat, sheet, q)?;
+        return Ok(Value::Null);
+    }
     // A one-message exception can disclose only the exact preview the person accepted.
     // Mark the resulting turn private for all later retrieval, agents, and suggestions.
     if local.is_none()

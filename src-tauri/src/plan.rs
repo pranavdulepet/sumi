@@ -577,6 +577,34 @@ mod tests {
         let turn = s.doc("chat", &conversation).unwrap()["turns"][0].clone();
         assert_eq!(turn["reply"], "Begin with a small sketch.");
         assert_eq!(turn["runtime"], "ChatGPT");
+        let archive = s.new_sheet().unwrap();
+        let budget = format!("budget/{}/ChatGPT", chrono::Utc::now().format("%Y-%m"));
+        let before = s.get(&budget).unwrap();
+        s.db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO imported_messages VALUES (?1,?2,?3,?4,?5)",
+                rusqlite::params![
+                    "row1",
+                    "example-source",
+                    now(),
+                    "assistant",
+                    "Try the copperplate workshop."
+                ],
+            )
+            .unwrap();
+        let request = json!({"sheet":archive,"turn":id(),"text":"In my imported chat, what did you recommend for copperplate?"});
+        app::action(&s, "askSheet", &request).unwrap();
+        app::action(&s, "askSheet", &request).unwrap();
+        let saved = s.doc("chat", &archive).unwrap();
+        assert_eq!(saved["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            saved["turns"][0]["timeline"][0]["words"],
+            "Try the copperplate workshop."
+        );
+        assert_eq!(saved["turns"][0]["timeline"][0]["role"], "assistant");
+        assert_eq!(saved["networkClosed"], true);
+        assert_eq!(s.get(&budget).unwrap(), before);
         let sensitive = s.new_sheet().unwrap();
         let mut args = json!({"sheet":sensitive,"turn":id(),"text":"Explain the word medication."});
         let preview = app::action(&s, "askSheet", &args).unwrap();
