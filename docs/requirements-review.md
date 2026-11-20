@@ -14,7 +14,9 @@ The everyday conversation is the entry point. The original notebook’s evidence
 | Keep and move a notebook | SQLCipher, Markdown projections, scoped MCP access, key storage, portable export and confirmation before moving a notebook to Trash have separate checks. The downloadable Apple Silicon app is unpacked and its code signature is verified during release. |
 | Get set up on local inference | The browser stopped a real publisher transfer and resumed it. After verifying the complete GGUF, the bundled Gemma 4 12B runtime answered a sealed decision without an external model server. |
 
-The final release build passed 53 standard Rust tests, 15 native integration tests and all 16 Playwright browser scenarios. The Mac archive passed checksum, extraction and strict recursive signature verification.
+The 1.0.7 release passed 53 standard Rust tests, 15 native integration tests and all 16 Playwright browser scenarios. The Mac archive passed checksum, extraction and strict recursive signature verification.
+
+The 1.0.8 review adds retrieval of assistant replies across sheets. The regression tests distinguish a person’s words from an assistant’s suggestion, retrieve the matching section of a long Unicode message, and keep file-backed assistant replies out of hosted search. A ChatGPT-only notebook can quote a locally imported conversation without sending the search or matches to a provider. The browser flow reopens the workshop question on a fresh sheet and checks the dated, attributed passage behind the answer. This patch passed 54 standard Rust tests, 15 native integrations and 15 browser scenarios. The optional publisher-download scenario last ran for 1.0.7. The drawable download page uses locally served museum paper texture, pointer pressure and a reduced-motion mode.
 
 The ten captioned films show the conversation flows with invented example notebooks. The hosted-account and metered-image paths were exercised against local protocol fixtures. Real account entitlement, plan quotas, and paid generation remain unverified. No personal archive or paid inference was used. [Watch the walkthroughs](walkthroughs.md)
 

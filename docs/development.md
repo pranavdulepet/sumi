@@ -8,7 +8,7 @@ npm ci
 npm run desktop
 ```
 
-To make and verify the distributable bundle and the website download, run `scripts/release.sh`. The standalone landing page is `website/index.html`. It loads its fonts locally and works when opened on disk.
+To make and verify the distributable bundle and the website download, run `scripts/release.sh`. The standalone landing page is `website/index.html`. It loads its fonts and paper locally. On disk and on localhost the download uses the adjacent Mac archive. The public page links to the tagged release. To publish it, copy the page, both fonts and the resolved paper image into the root of the `gh-pages` branch. Include the asset notices from `licenses/` and preserve `.nojekyll`. Publish the matching Mac release before updating the download link.
 
 ```sh
 cargo test --manifest-path src-tauri/Cargo.toml

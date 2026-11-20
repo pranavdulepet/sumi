@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Sumi — a private notebook</title>
+    <title>Sumi — a personal conversation on your Mac</title>
     <style>
       @font-face {
         font-family: Mincho;
@@ -26,6 +26,14 @@
         font:
           17px Zen,
           sans-serif;
+      }
+      body::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        background: url('paper.png') repeat;
+        opacity: 0.18;
+        pointer-events: none;
       }
       canvas {
         position: fixed;
@@ -79,56 +87,77 @@
     <main>
       <h1>Sumi</h1>
       <p>An everyday conversation that remembers what matters to you.</p>
-      <a href="Sumi-macOS.zip" download>Download for Mac ↓</a
+      <a href="https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.8/Sumi-1.0.8-macOS.zip" download>Download for Mac ↓</a
       ><small>Apple Silicon · macOS 14 or later</small>
     </main>
     <script>
-      const canvas = document.querySelector('canvas'),
-        ink = canvas.getContext('2d');
-      let strokes = [],
-        active = null;
-      function render() {
-        const scale = devicePixelRatio;
-        canvas.width = innerWidth * scale;
-        canvas.height = innerHeight * scale;
-        ink.scale(scale, scale);
+      if (location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(location.hostname)) {
+        document.querySelector('a[download]').href = 'Sumi-macOS.zip';
+      }
+      const canvas = document.querySelector('canvas');
+      const ink = canvas.getContext('2d');
+      const dark = matchMedia('(prefers-color-scheme: dark)');
+      const still = matchMedia('(prefers-reduced-motion: reduce)');
+      const strokes = [];
+      let active, pointer, frame;
+
+      function paint(from, to, spread) {
+        ink.beginPath();
+        ink.moveTo(from.x, from.y);
+        ink.lineTo(to.x + 0.01, to.y + 0.01);
         ink.lineCap = 'round';
-        ink.lineJoin = 'round';
-        ink.strokeStyle = matchMedia('(prefers-color-scheme:dark)').matches
-          ? '#e8e1d5'
-          : '#1f1c1a';
-        for (const lines of strokes) {
-          ink.beginPath();
-          for (const [i, p] of lines.entries()) {
-            if (!i) {
-              ink.moveTo(p.x, p.y);
-              continue;
-            }
-            ink.lineWidth = p.w;
-            ink.lineTo(p.x, p.y);
-            ink.stroke();
-            ink.beginPath();
-            ink.moveTo(p.x, p.y);
-          }
+        ink.strokeStyle = dark.matches ? '#e8e1d5' : '#28231d';
+        ink.lineWidth = (from.w + to.w) / 2 + spread;
+        ink.globalAlpha = spread ? 0.09 : 0.85;
+        ink.stroke();
+      }
+      function render(time) {
+        ink.clearRect(0, 0, innerWidth, innerHeight);
+        let wet = false;
+        for (const stroke of strokes) {
+          const age = still.matches ? 1 : Math.min(1, (time - stroke.at) / 650);
+          const bleed = 0.2 + 2.2 * Math.max(0, age);
+          wet ||= age < 1;
+          stroke.points.forEach((point, i) => {
+            const previous = stroke.points[Math.max(0, i - 1)];
+            paint(previous, point, bleed);
+            paint(previous, point, 0);
+          });
         }
+        frame = wet ? requestAnimationFrame(render) : null;
+      }
+      function schedule() {
+        if (!frame) frame = requestAnimationFrame(render);
+      }
+      function resize() {
+        const scale = Math.min(devicePixelRatio, 3);
+        canvas.width = Math.round(innerWidth * scale);
+        canvas.height = Math.round(innerHeight * scale);
+        ink.setTransform(scale, 0, 0, scale, 0, 0);
+        schedule();
       }
       function point(e) {
-        return {x: e.clientX, y: e.clientY, w: 1 + 5 * (e.pressure || 0.5)};
+        return {x: e.clientX, y: e.clientY, w: 0.8 + 5 * (e.pressure || 0.45)};
       }
       canvas.onpointerdown = e => {
-        canvas.setPointerCapture(e.pointerId);
-        active = [point(e)];
+        if (!e.isPrimary || e.button !== 0) return;
+        pointer = e.pointerId;
+        canvas.setPointerCapture(pointer);
+        active = {at: performance.now(), points: [point(e)]};
         strokes.push(active);
+        schedule();
       };
       canvas.onpointermove = e => {
-        if (active) {
-          active.push(point(e));
-          render();
-        }
+        if (!active || e.pointerId !== pointer) return;
+        active.points.push(point(e));
+        active.at = performance.now();
+        schedule();
       };
-      canvas.onpointerup = canvas.onpointercancel = () => (active = null);
-      addEventListener('resize', render);
-      render();
+      canvas.onlostpointercapture = () => { active = null; };
+      dark.addEventListener('change', schedule);
+      still.addEventListener('change', schedule);
+      addEventListener('resize', resize);
+      resize();
     </script>
   </body>
 </html>

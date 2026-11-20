@@ -179,7 +179,7 @@ pub fn archive_question(q: &str) -> bool {
     .any(|cue| lower.contains(cue))
 }
 
-fn asked_speaker(question: &str) -> &'static str {
+pub(crate) fn asked_speaker(question: &str) -> &'static str {
     static ASSISTANT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
         r"(?i)\b(?:(?:did|had|have) (?:you|sumi|the assistant) (?:say|suggest|recommend|call|write|answer|reply|mention)|(?:you|sumi|the assistant) (?:said|suggested|recommended|wrote|replied|called|mentioned)|your (?:previous|earlier) (?:answer|reply|recommendation))\b").unwrap()

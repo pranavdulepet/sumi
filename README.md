@@ -2,13 +2,13 @@
 
 Sumi is a personal conversation app for Apple Silicon Macs. Tell it “My printmaking project is called Orchard.” Later, correct the name to “North Window.” Open a fresh sheet and ask it to draft an invitation. It can use the new name, show you the dated memory behind the answer, and let you change it again.
 
-[Download Sumi for Mac](https://github.com/pranavdulepet/sumi/releases/tag/mac-1.0.7) · [Watch ten short walkthroughs](docs/walkthroughs.md) · [Build from source](docs/development.md)
+[Download Sumi for Mac](https://github.com/pranavdulepet/sumi/releases/tag/mac-1.0.8) · [Draw on the homepage](https://pranavdulepet.github.io/sumi/) · [Watch ten short walkthroughs](docs/walkthroughs.md) · [Build from source](docs/development.md)
 
 ## Start a conversation
 
 On macOS 14 or later, unzip Sumi and move it to Applications. This release is ad-hoc signed. macOS may ask for approval to open it or access an existing notebook’s Keychain item after an upgrade.
 
-Choose **Continue with ChatGPT** to connect an eligible plan, or **Think on this Mac instead** to use a local model. Draw your seal and write on the sheet. Return sends, Shift-Return adds a line, and **Sheets** (⌘O) reopens a conversation. You can import old chats after your first answer or from Settings.
+Choose **Continue with ChatGPT** to connect an eligible plan, or **Think on this Mac instead** to use a local model. Draw your seal and write on the sheet. Return sends, Shift-Return adds a line, and **Sheets** (⌘O) reopens a conversation. You can import old chats after your first answer or from Settings. Ask what you said or what an assistant recommended. The search can quote imported messages directly on your Mac, even without local model weights.
 
 Drop in a class schedule and ask “Which class can I take after work?” Follow up on the same sheet without attaching it again. Sumi reads PDFs, documents, images and spreadsheets on the Mac. Answers can include tables, charts, diagrams and checklists you can tick. Expand **Behind this reply** to inspect the model and tools.
 

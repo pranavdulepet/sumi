@@ -312,7 +312,8 @@ pub(crate) fn enduring(q: &str) -> bool {
 // Answer direct name recall from the person's own sentence when it is present.
 fn recalled_name(q: &str, turns: &[Value], recall: Option<&Value>) -> Option<String> {
     let lower = q.to_lowercase();
-    if !lower.contains("name")
+    if desk_tools::asked_speaker(q) == "assistant"
+        || !lower.contains("name")
         || !["mentioned", "what did i", "remind me", "called", "named"]
             .iter()
             .any(|w| lower.contains(w))
@@ -1082,10 +1083,15 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
     } else if let Some(name) = recalled_name(q, turns, recall) {
         name
     } else if !timeline.is_empty() {
-        "Here’s what you said, in order.".to_owned()
+        if timeline.iter().any(|p| p["role"] == "assistant") {
+            "Here are the earlier messages, in order.".to_owned()
+        } else {
+            "Here’s what you said, in order.".to_owned()
+        }
     } else if recall.is_some_and(|v| v["passages"].as_array().is_some_and(Vec::is_empty))
-        && historical_only(q)
-        && turns.is_empty()
+        && (desk_tools::archive_question(q)
+            || desk_tools::asked_speaker(q) == "assistant"
+            || (historical_only(q) && turns.is_empty()))
     {
         "I couldn’t find an earlier passage about that in your notebook.".to_owned()
     } else if let Some(p) = optional {
