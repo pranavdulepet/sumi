@@ -150,7 +150,7 @@ function Notebook() {
         showSettings(true);
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        menu(v => !v);
+        navigate('Scroll');
       } else if (
         (e.metaKey || e.ctrlKey) &&
         '1234'.includes(e.key) &&
@@ -229,6 +229,25 @@ function Notebook() {
         </main>
       ) : (
         <>
+          <div
+            aria-hidden="true"
+            className="landscape"
+            style={
+              {
+                '--reveal':
+                  Math.min(
+                    85,
+                    32 +
+                      6 *
+                        Math.sqrt(
+                          (data.notes?.length || 0) +
+                            data.entries.length +
+                            (data.skills?.length || 0),
+                        ),
+                  ) + '%',
+              } as React.CSSProperties
+            }
+          />
           <div key={place} className="unroll">
             {settings ? (
               <ThinkingSettings
@@ -236,6 +255,8 @@ function Notebook() {
                 act={act}
                 close={() => showSettings(false)}
                 teach={() => teach(true)}
+                agents={() => navigate('Seal')}
+                readings={() => navigate('Mirror')}
               />
             ) : place === 'Desk' ? (
               <Desk
@@ -268,14 +289,14 @@ function Notebook() {
                 className="ring"
                 onClick={e => e.stopPropagation()}
               >
-                {places.map((p, i) => (
+                {places.slice(0, 2).map((p, i) => (
                   <button
                     key={p}
                     className={'p' + i + (place === p ? ' chosen' : '')}
                     onClick={() => navigate(p)}
                   >
-                    {p}
-                    <small>⌘{i + 1}</small>
+                    {i === 0 ? 'Conversation' : 'What Sumi knows'}
+                    <small>{i === 0 ? '⌘1' : '⌘K'}</small>
                   </button>
                 ))}
                 <button

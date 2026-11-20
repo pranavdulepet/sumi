@@ -62,6 +62,22 @@ pub fn keep(s: &Store, id: &str, rule: &str) -> Res<Value> {
         "createFromReview",
         &json!({"id":id,"section":"deciding","text":rule,"localOnly":lesson["private"]}),
     )?;
+    if let (Some(sheet), Some(turn)) = (
+        lesson["context"]["sheet"].as_str(),
+        lesson["context"]["turn"].as_str(),
+    ) {
+        if let Some(chat) = s.optional_doc("chat", sheet)? {
+            if let Some(t) = chat["turns"]
+                .as_array()
+                .and_then(|ts| ts.iter().find(|v| v["id"] == turn))
+            {
+                s.put(
+                    "routeCorrection",
+                    &json!({"id":id,"request":t["question"],"lane":t["lane"],"at":now()}),
+                )?;
+            }
+        }
+    }
     let current = s.get("current")?;
     let current = current.as_str().ok_or("Open your notebook first.")?;
     let sheet = if s.sheet(current)?.is_empty()

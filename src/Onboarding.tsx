@@ -165,7 +165,7 @@ export function Onboarding({
   const [choice, quiz] = useState<Row | null>(null),
     [last, result] = useState<Row | null>(null);
   const [chosenStep, go] = useState(
-    data.firstCorrection ? 2 : data.mark ? 1 : 0,
+    data.firstCorrection ? 2 : data.model && !data.mark ? 0 : 1,
   );
   const [busy, setBusy] = useState(false);
   const [err, error] = useState('');
@@ -231,12 +231,16 @@ export function Onboarding({
           <MarkPad
             save={async p => {
               await act('mark', {points: p});
-              go(1);
+              await finish();
             }}
           />
         </>
       ) : step === 1 ? (
-        <Think act={act} data={data} next={finish} />
+        <Think
+          act={act}
+          data={data}
+          next={() => (data.mark ? finish() : go(0))}
+        />
       ) : step === 2 ? (
         <>
           <h1>

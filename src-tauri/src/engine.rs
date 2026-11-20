@@ -198,13 +198,6 @@ fn reflect(s: &Store, m: &Value, train: &[Value], retain: bool) -> Res<Option<Va
         && s.get(&format!("dismiss/{}", record["id"]))?.is_null()
     {
         s.put("proposal", &record)?;
-        if s.get("autoStamp")? == true
-            && record["section"] == "writing"
-            && days.len() >= 5
-            && record["confidence"].as_f64().unwrap_or(0.) >= 0.75
-        {
-            scroll::change(s, "stamp", &record)?;
-        }
     }
     Ok(Some(record))
 }

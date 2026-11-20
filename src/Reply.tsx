@@ -1,10 +1,15 @@
-import {Fragment} from 'react';
+import {chart} from './Chart';
+import {Fragment, type ReactNode} from 'react';
 
 // Render the text forms a notebook uses. All model output stays in React text nodes.
-function inline(text: string) {
+function rich(text: string, mark?: (index: number) => ReactNode) {
   return text
-    .split(/(\*\*[^*\n]+\*\*|`[^`\n]+`|\*[^*\n]+\*)/g)
+    .split(/(\[\[m\d+\]\]|\*\*[^*\n]+\*\*|`[^`\n]+`|\*[^*\n]+\*)/g)
     .map((part, i) => {
+      if (/^\[\[m\d+\]\]$/.test(part))
+        return (
+          <Fragment key={i}>{mark?.(Number(part.slice(3, -2)) - 1)}</Fragment>
+        );
       if (part.startsWith('**') && part.endsWith('**'))
         return <strong key={i}>{part.slice(2, -2)}</strong>;
       if (part.startsWith('`') && part.endsWith('`'))
@@ -14,11 +19,20 @@ function inline(text: string) {
       return <Fragment key={i}>{part}</Fragment>;
     });
 }
-export function Reply({text}: {text: string}) {
+export function Reply({
+  text,
+  mark,
+}: {
+  text: string;
+  mark?: (index: number) => ReactNode;
+}) {
+  const inline = (value: string) => rich(value, mark);
   const blocks = text.split(/(```[^\n]*\n[\s\S]*?(?:```|$))/g);
   return (
     <div className="reply">
       {blocks.map((block, i) => {
+        const visual = chart(block);
+        if (visual) return <Fragment key={i}>{visual}</Fragment>;
         if (block.startsWith('```'))
           return (
             <pre key={i}>
@@ -34,6 +48,43 @@ export function Reply({text}: {text: string}) {
           .map((paragraph, j) => {
             const lines = paragraph.split('\n');
             const key = i + '-' + j;
+            if (
+              lines.length >= 3 &&
+              /^\s*\|?\s*:?-{3,}/.test(lines[1]) &&
+              lines[0].includes('|')
+            ) {
+              const cells = (line: string) =>
+                line
+                  .trim()
+                  .replace(/^\||\|$/g, '')
+                  .split('|')
+                  .map(v => v.trim());
+              const header = cells(lines[0]);
+              const rows = lines.slice(2).map(cells);
+              if (rows.every(r => r.length === header.length))
+                return (
+                  <div className="reply-table" key={key}>
+                    <table>
+                      <thead>
+                        <tr>
+                          {header.map((v, k) => (
+                            <th key={k}>{inline(v)}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r, k) => (
+                          <tr key={k}>
+                            {r.map((v, col) => (
+                              <td key={col}>{inline(v)}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+            }
             if (lines.every(line => /^\s*[-*] /.test(line)))
               return (
                 <ul key={key}>

@@ -1,4 +1,4 @@
-use crate::{desk_tools, engine, local, models, plan, scroll, store::*};
+use crate::{desk_tools, engine, local, memory, models, plan, scroll, store::*, web_search};
 use serde_json::{json, Value};
 use std::{collections::HashSet, fs};
 
@@ -31,23 +31,41 @@ pub fn skills(s: &Store) -> Res<Vec<Value>> {
         return Ok(vec![]);
     }
     let mut rows = vec![];
-    for file in fs::read_dir(dir).msg()? {
+    for file in fs::read_dir(&dir).msg()? {
         let file = file.msg()?;
-        if !file.file_type().msg()?.is_file() {
-            continue;
-        }
+        let ty = file.file_type().msg()?;
         let path = file.path();
-        if path.extension().and_then(|v| v.to_str()) != Some("md") {
-            continue;
-        }
-        let Some(id) = path
-            .file_stem()
-            .and_then(|v| v.to_str())
-            .filter(|k| ident(k).is_ok())
-        else {
+        let key = if ty.is_dir() {
+            let Some(k) = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.rsplit('-').next())
+            else {
+                continue;
+            };
+            k
+        } else if ty.is_file() && path.extension().is_some_and(|x| x == "md") {
+            path.file_stem().and_then(|n| n.to_str()).unwrap_or("")
+        } else {
             continue;
         };
-        let value = fs::read_to_string(&path).msg()?;
+        let Ok(id) = ident(key) else {
+            continue;
+        };
+        let source = if ty.is_dir() {
+            path.join("SKILL.md")
+        } else {
+            path.clone()
+        };
+        if !source.symlink_metadata().is_ok_and(|m| m.is_file()) {
+            continue;
+        }
+        let raw = fs::read_to_string(&source).msg()?;
+        let value = raw
+            .strip_prefix("---\n")
+            .and_then(|v| v.split_once("\n---\n"))
+            .map(|(_, v)| v)
+            .unwrap_or(&raw);
         if let Some((title, body)) = value.trim().split_once('\n') {
             let body = body.trim();
             let private = body.starts_with("<!-- local -->");
@@ -60,7 +78,7 @@ pub fn skills(s: &Store) -> Res<Vec<Value>> {
                 learned = serde_json::from_str(metadata).unwrap_or(Value::Null);
                 body = rest.trim_start();
             }
-            rows.push(json!({"id":id,"title":title.trim_start_matches('#').trim(),"private":private,"body":body,"learned":learned}));
+            rows.push(json!({"id":id,"file":source.strip_prefix(&dir).msg()?.to_string_lossy(),"title":title.trim_start_matches('#').trim(),"private":private,"body":body,"learned":learned}));
         }
     }
     rows.sort_by_key(|v| v["title"].as_str().unwrap_or("").to_lowercase());
@@ -89,10 +107,44 @@ pub fn save_skill(s: &Store, a: &Value) -> Res<Value> {
     } else {
         String::new()
     };
-    atomic(
-        &dir.join(format!("{id}.md")),
+    let previous = skills(s)?.into_iter().find(|v| v["id"] == id);
+    let slug = title
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug = slug.chars().take(30).collect::<String>();
+    let slug = slug.trim_end_matches('-');
+    let name = format!("{}-{id}", if slug.is_empty() { "method" } else { slug });
+    let target = previous
+        .as_ref()
+        .and_then(|v| v["file"].as_str())
+        .map(|f| dir.join(f))
+        .unwrap_or_else(|| dir.join(name).join("SKILL.md"));
+    let front = if target.file_name().is_some_and(|v| v == "SKILL.md") {
+        let folder = target.parent().ok_or("Missing skill folder.")?;
+        fs::create_dir_all(folder).msg()?;
+        let machine = folder
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or("Invalid skill folder.")?;
+        let description = body
+            .split_whitespace()
+            .take(40)
+            .collect::<Vec<_>>()
+            .join(" ");
         format!(
-            "# {title}\n\n{}{metadata}{body}\n",
+            "---\nname: {machine}\ndescription: {}\n---\n\n",
+            json!(description)
+        )
+    } else {
+        String::new()
+    };
+    atomic(
+        &target,
+        format!(
+            "{front}# {title}\n\n{}{metadata}{body}\n",
             if a["private"] == true {
                 "<!-- local -->\n"
             } else {
@@ -160,7 +212,13 @@ fn choose_model(
     match available() {
         Some(model) => Ok(model),
         None if private => Err("This sheet needs a local model. Connect one in Settings.".into()),
-        None => Ok(primary.clone()),
+        None => {
+            let mut model = primary.clone();
+            if let Some(fast) = primary["fast"].as_str() {
+                model["name"] = json!(fast);
+            }
+            Ok(model)
+        }
     }
 }
 fn mirror(s: &Store, chat: &Value) -> Res<()> {
@@ -173,6 +231,16 @@ fn mirror(s: &Store, chat: &Value) -> Res<()> {
             turn["question"].as_str().unwrap_or(""),
             turn["reply"].as_str().unwrap_or("")
         ));
+        for source in turn["web"]["sources"].as_array().into_iter().flatten() {
+            text.push_str(&format!(
+                "- {} · {}\n",
+                source["title"].as_str().unwrap_or("Source"),
+                source["url"].as_str().unwrap_or("")
+            ));
+        }
+        if let Some(n) = turn["usedMemory"].get("text").and_then(Value::as_str) {
+            text.push_str(&format!("\nFrom your notebook: {n}\n\n"));
+        }
         for passage in turn["timeline"].as_array().into_iter().flatten() {
             text.push_str(&format!(
                 "> {} · {}\n\n",
@@ -225,6 +293,38 @@ pub(crate) fn enduring(q: &str) -> bool {
     .any(|cue| q.contains(cue))
 }
 
+// Answer direct name recall from the person's own sentence when it is present.
+fn recalled_name(q: &str, turns: &[Value], recall: Option<&Value>) -> Option<String> {
+    let lower = q.to_lowercase();
+    if !lower.contains("name")
+        || !["mentioned", "what did i", "remind me", "called", "named"]
+            .iter()
+            .any(|w| lower.contains(w))
+    {
+        return None;
+    }
+    static NAMED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?i:called|named)\s+["“']?([\p{Lu}][\p{L}'’-]*(?: [\p{Lu}][\p{L}'’-]*){0,5})"#,
+        )
+        .unwrap()
+    });
+    let terms = words(q);
+    let earlier = turns.iter().rev().filter_map(|t| t["question"].as_str());
+    let recalled = recall
+        .and_then(|r| r["passages"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p["words"].as_str());
+    earlier
+        .chain(recalled)
+        .flat_map(|text| text.split(['.', '!', '?']))
+        .filter(|sentence| !terms.is_disjoint(&words(sentence)))
+        .find_map(|sentence| {
+            let name = NAMED.captures(sentence)?;
+            Some(format!("You called it {}.", &name[1]))
+        })
+}
 fn historical_only(q: &str) -> bool {
     let q = q.to_lowercase();
     q.starts_with("what did i") || q.starts_with("what was my") || desk_tools::wants_timeline(&q)
@@ -293,8 +393,10 @@ fn previous_method(s: &Store, q: &str, hosted: bool) -> Res<Option<String>> {
         return Ok(None);
     };
     let db = s.db.lock().unwrap();
-    let mut st=db.prepare("SELECT json_extract(t.value,'$.question') FROM docs c JOIN docs p ON p.kind='sheet' AND p.id=c.id JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND (?1=0 OR (coalesce(json_extract(c.v,'$.private'),0)=0 AND coalesce(json_extract(p.v,'$.private'),0)=0)) AND julianday(coalesce(json_extract(t.value,'$.at'),json_extract(p.v,'$.date')))>=julianday('now','-90 days') ORDER BY julianday(coalesce(json_extract(t.value,'$.at'),json_extract(p.v,'$.date'))) DESC LIMIT 256").msg()?;
+    let mut st=db.prepare("SELECT json_extract(t.value,'$.question'),coalesce(json_extract(t.value,'$.at'),json_extract(p.v,'$.date')) FROM docs c JOIN docs p ON p.kind='sheet' AND p.id=c.id JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND (?1=0 OR (coalesce(json_extract(c.v,'$.private'),0)=0 AND coalesce(json_extract(p.v,'$.private'),0)=0)) AND julianday(coalesce(json_extract(t.value,'$.at'),json_extract(p.v,'$.date')))>=julianday('now','-90 days') ORDER BY julianday(coalesce(json_extract(t.value,'$.at'),json_extract(p.v,'$.date'))) DESC LIMIT 256").msg()?;
     let mut rows = st.query([hosted]).msg()?;
+    let mut days = std::collections::HashSet::from([chrono::Local::now().date_naive()]);
+    let mut latest = None;
     while let Some(row) = rows.next().msg()? {
         let text: String = row.get(0).msg()?;
         let other = words(&text);
@@ -302,7 +404,14 @@ fn previous_method(s: &Store, q: &str, hosted: bool) -> Res<Option<String>> {
             && terms.intersection(&other).count() >= 3
             && (!hosted || (!local::sensitive(&text) && crate::sources::audit(&text).is_some()))
         {
-            return Ok(Some(text));
+            let stamp: String = row.get(1).msg()?;
+            if let Some(at) = scroll::instant(&stamp) {
+                days.insert(at.with_timezone(&chrono::Local).date_naive());
+            }
+            latest.get_or_insert(text);
+            if days.len() >= 3 {
+                return Ok(latest);
+            }
         }
     }
     Ok(None)
@@ -341,7 +450,7 @@ fn reflect_method(s: &Store, task: &Value, model: &Value) -> Res<()> {
         model,
         "method reflection",
         include_str!("../../prompts/method.txt"),
-        &json!({"earlier_request":task["earlier"],"latest_request":task["cue"],"previous_method":task["previous_body"]}),
+        &json!({"earlier_request":task["earlier"],"latest_request":task["cue"],"previous_method":task["previous_body"],"successful_result":task["successful_result"]}),
         200,
         Some(&schema),
     )?;
@@ -367,11 +476,43 @@ fn reflect_method(s: &Store, task: &Value, model: &Value) -> Res<()> {
     Ok(())
 }
 
+// The full text remains on disk when a learned method falls out of use.
+fn retire_unused(s: &Store) -> Res<()> {
+    let today = chrono::Local::now().date_naive().to_string();
+    if s.get("skillsReviewedOn")? == today {
+        return Ok(());
+    }
+    for skill in skills(s)? {
+        let Some(created) = skill["learned"]["at"].as_str().and_then(scroll::instant) else {
+            continue;
+        };
+        if (chrono::Utc::now() - created).num_days() < 60 {
+            continue;
+        }
+        let id = ident(skill["id"].as_str().unwrap_or(""))?;
+        let used:Option<String>=s.db.lock().unwrap().query_row("SELECT max(json_extract(t.value,'$.at')) FROM docs c JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND json_extract(t.value,'$.methodId')=?", [id],|r|r.get(0)).msg()?;
+        if (chrono::Utc::now() - used.as_deref().and_then(scroll::instant).unwrap_or(created))
+            .num_days()
+            >= 60
+        {
+            let dir = s.root.join("scroll/skills");
+            let file = skill["file"].as_str().ok_or("Missing skill file.")?;
+            let target = dir.join("retired").join(file);
+            fs::create_dir_all(target.parent().unwrap()).msg()?;
+            fs::rename(dir.join(file), target).msg()?;
+        }
+    }
+    s.set("skillsReviewedOn", &json!(today))
+}
 // If a reflection is interrupted, the idle worker can finish it on this Mac.
 pub fn dream(s: &Store) -> Res<()> {
+    let primary = s.get("model")?;
+    memory::dream_core(s, &primary, local::idle)?;
+    memory::dream_proposal(s, &primary)?;
     let Ok(_edit) = s.edit.try_lock() else {
         return Ok(());
     };
+    retire_unused(s)?;
     let job = {
         let db = s.db.lock().unwrap();
         use rusqlite::OptionalExtension;
@@ -400,10 +541,20 @@ fn finish_turn(s: &Store, chat: &mut Value, sheet: &str, question: &str) -> Res<
         s.put("methodReflection", job)?;
         chat.as_object_mut().unwrap().remove("pendingReflection");
     }
+    if let Some(notes) = chat.get("pendingNotes").and_then(Value::as_array) {
+        for n in notes {
+            if s.optional_doc("note", n["id"].as_str().unwrap())?.is_none() {
+                s.put("note", n)?;
+            }
+        }
+        memory::project(s)?;
+        chat.as_object_mut().unwrap().remove("pendingNotes");
+    }
     mirror(s, chat)?;
-    if s.sheet(sheet)?.trim() == question {
+    if chat["preserveDraft"] != true && s.sheet(sheet)?.trim() == question {
         s.save_sheet(sheet, "")?;
     }
+    chat.as_object_mut().unwrap().remove("preserveDraft");
     chat.as_object_mut().unwrap().remove("pendingFile");
     s.put("chat", chat)
 }
@@ -434,6 +585,20 @@ pub fn private_sheet(s: &Store, sheet: &str) -> Res<bool> {
             .is_some_and(|chat| chat["private"] == true))
 }
 
+pub fn private_request(q: &str) -> bool {
+    let lower = q.to_lowercase();
+    [
+        "keep this private",
+        "keep this offline",
+        "keep this on my mac",
+        "don't send this",
+        "do not send this",
+        "keep this local",
+    ]
+    .iter()
+    .any(|t| lower.contains(t))
+}
+
 pub fn ask(s: &Store, a: &Value) -> Res<Value> {
     let sheet = ident(a["sheet"].as_str().unwrap_or(""))?;
     let key = ident(a["turn"].as_str().unwrap_or(""))?;
@@ -455,13 +620,22 @@ pub fn ask(s: &Store, a: &Value) -> Res<Value> {
         return Ok(Value::Null);
     }
     let primary = s.get("model")?;
-    let mut private = a["private"] == true
+    let privacy_request = private_request(q);
+    let mut private = privacy_request
+        || a["private"] == true
         || sheet_info["private"] == true
         || chat["private"] == true
         || !plan::selected(&primary)
         || local::sensitive(q)
         || crate::sources::audit(q).is_none();
     let at = chrono::Local::now();
+    let restricted = privacy_request
+        || a["private"] == true
+        || sheet_info["private"] == true
+        || chat["networkClosed"] == true
+        || local::sensitive(q)
+        || crate::sources::audit(q).is_none()
+        || (chat["private"] == true && chat.get("networkClosed").is_none());
     let terms = words(q);
     let available = skills(s)?;
     let last = turns.last().unwrap_or(&Value::Null);
@@ -522,8 +696,23 @@ pub fn ask(s: &Store, a: &Value) -> Res<Value> {
         .filter(|skill| related(q, skill));
     let skill = forced.or(matched).or(named);
     private |= skill.is_some_and(|v| v["private"] == true);
-    let quick = routing["quick"].as_bool().unwrap_or_else(|| routine(q));
+    let corrected = s.list("routeCorrection")?.iter().take(64).any(|v| {
+        let prior = words(v["request"].as_str().unwrap_or(""));
+        let overlap = prior.intersection(&terms).count();
+        overlap >= 2 && overlap * 2 >= prior.len().min(terms.len()) && v["lane"] == "quick"
+    });
+    let quick = !corrected && routing["quick"].as_bool().unwrap_or_else(|| routine(q));
     let model = choose_model(&primary, private, quick, || local.clone())?;
+    let outing = web_search::outing(q, last);
+    let mut notes = memory::relevant(s, q, outing, plan::selected(&model))?;
+    if !outing {
+        for n in memory::core_notes(s, plan::selected(&model))? {
+            if !notes.iter().any(|v| v["id"] == n["id"]) {
+                notes.push(n);
+            }
+        }
+    }
+    let web = web_search::prepare(q, last, &routing, &notes, at.date_naive(), restricted);
     let tools = desk_tools::run(s, &routing, selector, private, at, q)?;
     let recall = tools.iter().find(|t| t["tool"] == "Notebook");
     let timeline: Vec<_> = recall
@@ -573,8 +762,13 @@ pub fn ask(s: &Store, a: &Value) -> Res<Value> {
         .collect();
     let mut history:Vec<_>=turns.iter().rev().take(6).map(|v|json!({"user":v["question"].as_str().unwrap_or("").chars().take(850).collect::<String>(),"assistant":v["reply"].as_str().unwrap_or("").chars().take(1200).collect::<String>()})).collect();
     history.reverse();
-    let payload = json!({"local_time":at.to_rfc3339(),"tool_results":tools,"conversation":history,"approved_preferences":rules,"chosen_method":skill.map(|v|v["body"].clone()),"current_request":q});
-    let answer = if !timeline.is_empty() {
+    let note_context:Vec<_>=notes.iter().enumerate().map(|(i,n)|json!({"number":i+1,"text":n["text"],"anchored_dates":n["dates"],"since":n["validFrom"]})).collect();
+    let payload = json!({"dated_notes":note_context,"local_time":at.to_rfc3339(),"tool_results":tools,"conversation":history,"approved_preferences":rules,"chosen_method":skill.map(|v|v["body"].clone()),"current_request":q});
+    let answer = if let Some(w) = &web {
+        web_search::introduction(w).to_owned()
+    } else if let Some(name) = recalled_name(q, turns, recall) {
+        name
+    } else if !timeline.is_empty() {
         "Here’s what you said, in order.".to_owned()
     } else if recall.is_some_and(|v| v["passages"].as_array().is_some_and(Vec::is_empty))
         && historical_only(q)
@@ -597,7 +791,11 @@ pub fn ask(s: &Store, a: &Value) -> Res<Value> {
     } else {
         previous_method(s, q, !private)?
     };
-    let revise = enduring(q) && !q.trim_end().ends_with('?') && q.len() <= 3200;
+    let revise = (!q.to_lowercase().starts_with("on weekends")
+        && !q.to_lowercase().starts_with("for weekends"))
+        && enduring(q)
+        && !q.trim_end().ends_with('?')
+        && q.len() <= 3200;
     let mut reflection = None;
     let one_off = [
         "just this time",
@@ -607,9 +805,29 @@ pub fn ask(s: &Store, a: &Value) -> Res<Value> {
     ]
     .iter()
     .any(|v| q.to_lowercase().contains(v));
-    if !one_off && (revise || (earlier.is_some() && skill.is_none())) {
+    let success = [
+        "that worked",
+        "that's perfect",
+        "that’s perfect",
+        "exactly what i needed",
+        "exactly what i wanted",
+    ]
+    .iter()
+    .any(|v| q.trim_end_matches(['.', '!']).eq_ignore_ascii_case(v))
+        && (last["tools"].as_array().is_some_and(|ts| ts.len() >= 2)
+            || last["web"]["status"] == "done");
+    if !one_off && (revise || success || (earlier.is_some() && skill.is_none())) {
         let updating = if revise { forced.or(matched) } else { None };
         let mut task = json!({"id":updating.map(|v|v["id"].clone()).unwrap_or_else(||json!(key)),"at":at.to_rfc3339(),"cue":q,"earlier":earlier,"explicit":revise,"private":private});
+        if success {
+            task["cue"] = last["question"].clone();
+            task["successful_result"] = json!(last["reply"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(600)
+                .collect::<String>());
+        }
         if let Some(v) = updating {
             task["previous_body"] = v["body"].clone();
         }
@@ -620,7 +838,25 @@ pub fn ask(s: &Store, a: &Value) -> Res<Value> {
             reflection = Some(job);
         }
     }
-    let turn = json!({"id":key,"at":at.to_rfc3339(),"question":q,"reply":answer,"model":model["name"],"runtime":model["runtime"],"rules":rules,"skill":skill.map(|v|v["title"].clone()),"tools":tools,"timeline":timeline,"worksheet":worksheet,"selector":selector["name"],"selectorRuntime":selector["runtime"],"methodId":skill.map(|v|v["id"].clone())});
+    let mut turn = json!({"lane":if private {"private"} else if quick {"quick"} else {"deep"},"notes":notes,"web":web,"id":key,"at":at.to_rfc3339(),"question":q,"reply":answer,"model":model["name"],"runtime":model["runtime"],"rules":rules,"skill":skill.map(|v|v["title"].clone()),"tools":tools,"timeline":timeline,"worksheet":worksheet,"selector":selector["name"],"selectorRuntime":selector["runtime"],"methodId":skill.map(|v|v["id"].clone())});
+    if turn["web"]["status"] == "ready"
+        && turn["web"]["outing"] == true
+        && s.get("autoListings")? == true
+        && !restricted
+    {
+        if let Err(e) = web_search::complete(s, &mut turn, &model, &notes) {
+            turn["web"]["status"] = json!("retry");
+            turn["reply"] = json!(e);
+        }
+    }
+    let mut observed = memory::observe(q, key, at, private, restricted);
+    for n in &mut observed {
+        n["sheet"] = json!(sheet);
+    }
+    if !observed.is_empty() {
+        chat["pendingNotes"] = json!(observed);
+    }
+    chat["networkClosed"] = json!(restricted);
     chat["turns"].as_array_mut().unwrap().push(turn);
     chat["private"] = json!(private);
     chat["pendingFile"] = json!(true);
@@ -631,6 +867,73 @@ pub fn ask(s: &Store, a: &Value) -> Res<Value> {
             s.del("methodReflection", key)?;
         }
     }
+    Ok(Value::Null)
+}
+
+pub fn confirm_search(s: &Store, a: &Value) -> Res<Value> {
+    let _lock = s.edit.lock().unwrap();
+    let sheet = ident(a["sheet"].as_str().unwrap_or(""))?;
+    let mut chat = s.doc("chat", sheet)?;
+    if chat["networkClosed"] == true || s.doc("sheet", sheet)?["private"] == true {
+        return Err("This sheet is private.".into());
+    }
+    let local_only = chat["private"] == true;
+    let turns = chat["turns"]
+        .as_array_mut()
+        .ok_or("Missing conversation.")?;
+    let index = turns
+        .iter()
+        .position(|t| t["id"] == a["turn"])
+        .ok_or("The question is no longer on this sheet.")?;
+    let previous = index
+        .checked_sub(1)
+        .map(|i| turns[i].clone())
+        .unwrap_or(Value::Null);
+    let turn = &mut turns[index];
+    if turn["web"]["status"] == "done" || turn["web"]["status"] == "empty" {
+        return Ok(Value::Null);
+    }
+    if !matches!(turn["web"]["status"].as_str(), Some("ready" | "retry"))
+        || turn["web"]["query"] != a["query"]
+        || !a["query"].is_string()
+    {
+        return Err("Read the current query before searching.".into());
+    }
+    let primary = s.get("model")?;
+    let model = choose_model(&primary, local_only, false, || local_model(s))?;
+    let notes = memory::relevant(
+        s,
+        turn["question"].as_str().unwrap_or(""),
+        turn["web"]["outing"] == true,
+        plan::selected(&model),
+    )?;
+    if turn["web"]["outing"] == true {
+        let updated = web_search::prepare(
+            turn["question"].as_str().unwrap_or(""),
+            &previous,
+            &Value::Null,
+            &notes,
+            chrono::Local::now().date_naive(),
+            false,
+        );
+        if let Some(new) = updated.filter(|w| w["query"] != turn["web"]["query"]) {
+            turn["reply"] = json!(web_search::introduction(&new));
+            turn["web"] = new;
+            chat["pendingFile"] = json!(true);
+            chat["preserveDraft"] = json!(true);
+            s.put("chat", &chat)?;
+            finish_turn(s, &mut chat, sheet, "")?;
+            return Ok(Value::Null);
+        }
+    }
+    if let Err(e) = web_search::complete(s, turn, &model, &notes) {
+        turn["web"]["status"] = json!("retry");
+        turn["reply"] = json!(e);
+    }
+    chat["pendingFile"] = json!(true);
+    chat["preserveDraft"] = json!(true);
+    s.put("chat", &chat)?;
+    finish_turn(s, &mut chat, sheet, "")?;
     Ok(Value::Null)
 }
 
@@ -645,10 +948,16 @@ mod tests {
         crate::app::setup(&s).unwrap();
         s.set("model", &json!({"name":"llama3.2:3b","runtime":"Ollama"}))
             .unwrap();
-        for subject in ["garden", "library"] {
+        for (days, subject) in [(2, "garden"), (1, "library"), (0, "studio")] {
             let sheet = s.new_sheet().unwrap();
             let q=format!("Draft a meeting brief for the {subject} project. Put the decision first, followed by three bullets.");
             ask(&s, &json!({"sheet":sheet,"turn":id(),"text":q})).unwrap();
+            if days > 0 {
+                let mut chat = s.doc("chat", &sheet).unwrap();
+                chat["turns"][0]["at"] =
+                    json!((chrono::Local::now() - chrono::Duration::days(days)).to_rfc3339());
+                s.put("chat", &chat).unwrap();
+            }
         }
         assert!(skills(&s).unwrap().is_empty());
         assert_eq!(s.list("methodReflection").unwrap().len(), 1);

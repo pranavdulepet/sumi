@@ -12,6 +12,7 @@ mod forget;
 mod ghost;
 mod jobs;
 mod local;
+mod memory;
 mod mirror;
 mod models;
 mod plan;
@@ -22,6 +23,7 @@ mod seed;
 mod sources;
 mod store;
 mod transport;
+mod web_search;
 mod weights;
 use std::sync::{
     atomic::{AtomicBool, Ordering},

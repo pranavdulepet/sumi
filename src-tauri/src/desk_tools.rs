@@ -88,7 +88,7 @@ fn calculate(expression: &str) -> Option<f64> {
 }
 
 // Resolve relative words against a civil date on the Mac, including across DST.
-fn calendar(base: NaiveDate, when: &str, offset: i64) -> Option<NaiveDate> {
+pub(crate) fn calendar(base: NaiveDate, when: &str, offset: i64) -> Option<NaiveDate> {
     let value = when.to_lowercase();
     let start = match value.trim() {
         "today" | "now" => base,
@@ -247,8 +247,8 @@ pub fn select(
     candidates: &[Value],
     now: DateTime<Local>,
 ) -> Res<Value> {
-    let properties = json!({"math":{"type":"string"},"date":{"type":"string"},"days":{"type":"integer"},"recall":{"type":"string"},"skill":{"type":"integer"},"quick":{"type":"boolean"}});
-    let schema = json!({"type":"object","properties":properties,"required":["math","date","days","recall","skill","quick"],"additionalProperties":false});
+    let properties = json!({"web":{"type":"string"},"math":{"type":"string"},"date":{"type":"string"},"days":{"type":"integer"},"recall":{"type":"string"},"skill":{"type":"integer"},"quick":{"type":"boolean"}});
+    let schema = json!({"type":"object","properties":properties,"required":["math","date","days","recall","skill","quick","web"],"additionalProperties":false});
     let menu: Vec<_> = candidates
         .iter()
         .enumerate()
@@ -278,6 +278,7 @@ pub fn select(
         route["recall"] = json!("");
         route["date"] = json!("");
         route["math"] = json!("");
+        route["web"] = json!("");
         return Ok(route);
     }
     let evidence = format!(

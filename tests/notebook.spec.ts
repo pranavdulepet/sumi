@@ -91,6 +91,8 @@ test('brushstroke, real local prediction, correction, history and persisted shee
       };
     });
     await page.goto('/');
+    await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
+    await page.getByRole('button', {name: 'Continue', exact: true}).click();
     await expect(page.getByText('A mark of your own.')).toBeVisible();
     const box = await page
       .getByRole('img', {name: /Draw your personal/})
@@ -101,8 +103,6 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     await page.mouse.move(box.x + 180, box.y + 90, {steps: 16});
     await page.mouse.up();
     await page.getByRole('button', {name: 'Keep my mark'}).click();
-    await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
-    await page.getByRole('button', {name: 'Continue', exact: true}).click();
     await page.getByRole('button', {name: 'Teach a correction'}).click();
     await expect(page.getByLabel('Your correction')).toBeVisible();
     await expect(
@@ -211,7 +211,8 @@ test('brushstroke, real local prediction, correction, history and persisted shee
       animations: 'disabled',
     });
     await page.getByRole('button', {name: 'Places'}).click();
-    await page.getByRole('button', {name: /^Seal/}).click();
+    await page.getByRole('button', {name: /^Settings/}).click();
+    await page.getByRole('button', {name: 'Connected agents'}).click();
     await expect(
       page.getByRole('heading', {name: 'Seal', exact: true}),
     ).toBeVisible();
@@ -1430,10 +1431,7 @@ test('one sheet keeps a conversation, a correction, and a reusable method', asyn
     const skill = (await rpc('state')).skills[0];
     expect(skill.title.trim()).toBeTruthy();
     expect(
-      await readFile(
-        join(folder, 'scroll', 'skills', skill.id + '.md'),
-        'utf8',
-      ),
+      await readFile(join(folder, 'scroll', 'skills', skill.file), 'utf8'),
     ).toContain('one painting');
     await page.keyboard.press('Meta+2');
     await page.getByText(skill.title, {exact: true}).click();
@@ -1565,6 +1563,105 @@ test('a dinner question chooses its own tools and remembers a change of mind', a
       21,
     );
     await expect(page.locator('.reply')).toContainText('21');
+  } finally {
+    core.stdin.end();
+  }
+});
+
+test('a weekend plan uses live sources and the current preference from another sheet', async ({
+  page,
+}, info) => {
+  test.skip(
+    process.env.SUMI_LIVE_SEARCH !== '1',
+    'Uses the free public search service and an installed local model.',
+  );
+  const {core, rpc} = await fixtureNotebook();
+  try {
+    await rpc('mark', {
+      points: [
+        [0.12, 0.75],
+        [0.48, 0.35],
+        [0.85, 0.52],
+      ],
+    });
+    await rpc('model', {name: 'llama3.2:3b', runtime: 'Ollama'});
+    await rpc('finish');
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    const field = page.getByLabel('Desk sheet');
+    async function say(text: string) {
+      await field.fill(text);
+      await field.press('Enter');
+      await expect(field).toHaveValue('', {timeout: 90000});
+    }
+    await say(
+      'I live in Boston. On weekends I love hands-on printmaking workshops.',
+    );
+    await page.getByRole('button', {name: /^Sheets/}).click();
+    await page.getByRole('button', {name: /New sheet/}).click();
+    await say('What should I do this weekend?');
+    const proposal = page.locator('.search-proposal');
+    await expect(proposal).toContainText('Boston');
+    await expect(proposal).toContainText('art workshops');
+    const draft = (await rpc('state')).chat.turns[0];
+    expect(draft.web.sources).toBeUndefined();
+    await page
+      .getByRole('button', {name: 'Search the web', exact: true})
+      .click();
+    await expect(page.locator('.source-link').first()).toBeVisible({
+      timeout: 90000,
+    });
+    const result = (await rpc('state')).chat.turns[0];
+    expect(result.web.status).toBe('done');
+    expect(result.web.sources[result.web.pick].url).toMatch(/^https?:\/\//);
+    expect(result.reply.length).toBeGreaterThan(30);
+    await page.getByLabel('Show remembered preference').hover();
+    await expect(page.getByLabel('Remembered words')).toContainText(
+      'printmaking',
+    );
+    await page.screenshot({path: info.outputPath('weekend.png')});
+    await page.getByRole('button', {name: 'Not true anymore'}).click();
+    await page.reload();
+    await expect(page.locator('.source-link').first()).toBeVisible();
+    await page.keyboard.press('Meta+k');
+    await page.getByText('Earlier memories', {exact: true}).click();
+    await expect(page.locator('.dated-notes')).toContainText('printmaking');
+    await page.keyboard.press('Meta+,');
+    await page.getByText('Web search', {exact: true}).click();
+    await page.getByLabel('Automatically look up weekend listings').check();
+    await page.keyboard.press('Meta+1');
+    async function fresh() {
+      await page.getByRole('button', {name: /^Sheets/}).click();
+      await page.getByRole('button', {name: /New sheet/}).click();
+    }
+    await fresh();
+    await say('What should I do this weekend?');
+    const automatic = (await rpc('state')).chat.turns[0];
+    expect(automatic.web.status).toBe('done');
+    expect(automatic.web.query).not.toMatch(/printmaking|art workshops/i);
+    expect(automatic.usedMemory).toBeUndefined();
+    await fresh();
+    await page.getByLabel('Keep this sheet offline').check();
+    await say('What should I do this weekend?');
+    const offline = (await rpc('state')).chat.turns[0];
+    expect(offline.web.status).toBe('private');
+    expect(offline.web.sources).toBeUndefined();
+    await expect(page.locator('.source-list, .search-proposal')).toHaveCount(0);
+    console.log(
+      'Weekend recommendation:',
+      result.reply,
+      'Source:',
+      result.web.sources[result.web.pick].url,
+    );
   } finally {
     core.stdin.end();
   }

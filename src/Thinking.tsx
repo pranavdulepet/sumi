@@ -134,7 +134,7 @@ export function Think({
     );
   return (
     <section className="think-page" aria-label="How Sumi thinks">
-      <Stroke className="think-mark" points={data.mark} />
+      <Stroke className="think-mark" points={data.mark || []} />
       <div className="think-copy">
         <h1>
           Your notebook stays on this Mac.
@@ -168,12 +168,17 @@ export function ThinkingSettings({
   act,
   close,
   teach,
+  agents,
+  readings,
 }: {
   data: Row;
   act: Action;
   close: () => void;
+  agents: () => void;
+  readings: () => void;
   teach: () => void;
 }) {
+  const [pendingSearch, setPendingSearch] = useState<boolean | null>(null);
   const plan = data.model?.runtime === 'ChatGPT';
   const [busy, working] = useState(false);
   return (
@@ -234,6 +239,32 @@ export function ThinkingSettings({
           </label>
         )}
       </details>
+      <details>
+        <summary>Web search</summary>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={pendingSearch ?? !!data.autoListings}
+            disabled={pendingSearch !== null}
+            onChange={async e => {
+              const value = e.target.checked;
+              setPendingSearch(value);
+              try {
+                await act('autoListings', {value});
+              } finally {
+                setPendingSearch(null);
+              }
+            }}
+          />
+          Automatically look up weekend listings
+        </label>
+        <p className="small">
+          Exa receives the city, dates and a broad activity category. Other
+          searches show you the query first. Private sheets stay offline.
+        </p>
+      </details>
+      <button onClick={agents}>Connected agents</button>
+      <button onClick={readings}>Review predictions</button>
       <Providers data={data} act={act} />
       <section>
         <details>

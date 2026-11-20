@@ -3,6 +3,8 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import {type Row, type Action, day} from './api';
 import {useGhostInk} from './useGhostInk';
 import {Stroke} from './Ink';
+import {MemoryMark} from './MemoryMark';
+import {SearchResult} from './SearchResult';
 import {Reply} from './Reply';
 import {marginGoal, paragraphAt} from './margin';
 export function Desk({
@@ -182,7 +184,7 @@ export function Desk({
         <button onClick={() => showArchive(!archive)}>
           {archive ? 'Close sheets' : 'Sheets'} <small>⌘O</small>
         </button>
-        {data.model?.runtime === 'ChatGPT' && !data.chat?.private && (
+        {!data.chat?.networkClosed && (
           <label className="check">
             <input
               type="checkbox"
@@ -199,7 +201,9 @@ export function Desk({
                 }
               }}
             />
-            Keep this sheet local
+            {data.model?.runtime === 'ChatGPT'
+              ? 'Keep this sheet local'
+              : 'Keep this sheet offline'}
           </label>
         )}
         {margin && (
@@ -259,7 +263,35 @@ export function Desk({
           >
             <p className="asked">{t.question}</p>
             <small>Sumi</small>
-            <Reply text={t.reply} />
+            <Reply
+              text={
+                t.usedMemory
+                  ? t.reply.replace(/^(.*?)([.!?])(?=\s|$)/, '$1$2 [[m1]]')
+                  : t.reply
+              }
+              mark={index => {
+                const note = t.usedMemory
+                  ? index === 0
+                    ? t.usedMemory
+                    : null
+                  : t.notes?.[index];
+                return (
+                  note && (
+                    <MemoryMark
+                      note={note}
+                      current={(note.kind === 'entry'
+                        ? data.entries
+                        : data.notes
+                      )?.find(
+                        (n: Row) => n.id === note.id && n.text === note.text,
+                      )}
+                      act={act}
+                    />
+                  )
+                );
+              }}
+            />
+            <SearchResult turn={t} sheet={data.current} act={act} />
             {t.timeline?.length > 0 && (
               <ol
                 className="memory-timeline"

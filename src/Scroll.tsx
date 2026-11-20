@@ -112,7 +112,7 @@ export function Scroll({
   }, [version]);
   return (
     <Page
-      name="Scroll"
+      name="What Sumi knows"
       margin={
         <>
           <button onClick={teach}>Teach a correction</button>
@@ -124,6 +124,39 @@ export function Scroll({
         </>
       }
     >
+      {!version && data.notes?.length > 0 && (
+        <section className="dated-notes">
+          <h2>In your words</h2>
+          {data.notes
+            .filter((n: Row) => !n.validUntil)
+            .map((n: Row) => (
+              <details key={n.id}>
+                <summary>{n.text}</summary>
+                <small>
+                  Since {new Date(n.validFrom).toLocaleDateString()}
+                </small>
+                <button onClick={() => act('closeNote', {id: n.id})}>
+                  Not true anymore
+                </button>
+              </details>
+            ))}
+          {data.notes.some((n: Row) => n.validUntil) && (
+            <details>
+              <summary>Earlier memories</summary>
+              {data.notes
+                .filter((n: Row) => n.validUntil)
+                .map((n: Row) => (
+                  <p key={n.id}>
+                    {n.text}
+                    <small>
+                      {day(n.validFrom)} – {day(n.validUntil)}
+                    </small>
+                  </p>
+                ))}
+            </details>
+          )}
+        </section>
+      )}
       {versions.length > 1 && (
         <label className="timeline">
           <span>{day(versions[0].date)}</span>
@@ -226,15 +259,18 @@ export function Scroll({
           </section>
         ) : null;
       })}
-      {!entries.length && !data.proposals.length && (
-        <div className="empty">
-          <h2>A place for what holds true.</h2>
-          <p>
-            Write a sentence about how you work, or let a reading bring a
-            pattern here for your seal.
-          </p>
-        </div>
-      )}
+      {!entries.length &&
+        !data.proposals.length &&
+        !data.notes?.length &&
+        !data.skills?.length && (
+          <div className="empty">
+            <h2>A place for what holds true.</h2>
+            <p>
+              Write a sentence about how you work, or let a reading bring a
+              pattern here for your seal.
+            </p>
+          </div>
+        )}
       {!version && <Methods skills={data.skills} act={act} />}
     </Page>
   );

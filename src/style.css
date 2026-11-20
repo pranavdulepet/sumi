@@ -793,3 +793,124 @@ td {
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
+.landscape {
+  position: fixed;
+  pointer-events: none;
+  z-index: -1;
+  right: 0;
+  bottom: 0;
+  width: clamp(140px, 26vw, 390px);
+  height: 80vh;
+  background: url('/materials/gentle-peaks.jpg') right bottom / cover no-repeat;
+  mix-blend-mode: multiply;
+  opacity: 0.46;
+  mask-image:
+    linear-gradient(to left, black 0%, transparent 100%),
+    linear-gradient(
+      to top,
+      black 0%,
+      black calc(var(--reveal) - 18%),
+      transparent var(--reveal)
+    );
+  mask-composite: intersect;
+}
+.exchange .asked {
+  font-family: -apple-system, sans-serif;
+  font-size: 0.87rem;
+  color: var(--soft);
+  border-left: 1px solid var(--line);
+  padding-left: 0.8rem;
+}
+.memory-mark {
+  display: inline;
+  position: relative;
+  white-space: normal;
+}
+.memory-mark > button {
+  font-size: 0.65rem;
+  padding: 0 0.25rem;
+  color: var(--seal);
+  vertical-align: super;
+}
+.memory-slip {
+  position: absolute;
+  z-index: 3;
+  bottom: 100%;
+  left: 50%;
+  width: min(15rem, 62vw);
+  transform: translateX(-60%);
+  padding: 0.7rem 1rem;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  box-shadow: 0 3px 10px #0001;
+  font-size: var(--small);
+}
+.memory-slip small,
+.dated-notes small,
+.source-link small {
+  display: block;
+}
+.memory-slip button,
+.search-proposal button {
+  color: var(--seal);
+}
+.search-proposal,
+.source-list {
+  margin: 0.75rem 0 1rem;
+  border-left: 2px solid var(--line);
+  padding-left: 0.9rem;
+}
+.source-link {
+  display: block;
+  text-align: left;
+  line-height: 1.4;
+  margin: 0.5rem 0;
+}
+.source-list details,
+.search-proposal p {
+  font-size: var(--small);
+}
+.search-proposal p {
+  margin: 0.3rem 0;
+}
+.reply-table {
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+.reply-table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+}
+.reply-table td,
+.reply-table th {
+  padding: 0.3rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+@media (prefers-color-scheme: dark) {
+  .landscape {
+    mix-blend-mode: screen;
+    filter: invert(1) grayscale(1);
+    opacity: 0.35;
+  }
+}
+.ink-chart {
+  margin: 1rem 0;
+  max-width: 30rem;
+}
+.ink-chart dl > div {
+  display: grid;
+  grid-template-columns: minmax(4rem, 1fr) 2fr;
+  gap: 0.7rem;
+  margin: 0.45rem 0;
+}
+.ink-chart dd {
+  margin: 0;
+  font-size: var(--small);
+}
+.ink-chart dd i {
+  height: 4px;
+  background: var(--seal);
+  display: block;
+}

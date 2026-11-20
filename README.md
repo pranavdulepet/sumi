@@ -1,29 +1,31 @@
 # Sumi
 
-Sumi is a personal notebook for conversations and decisions on Apple Silicon Macs. Ask a question, correct an answer in your own words, and choose which parts of that correction belong in the notebook. On the next related decision, you can open Sumi’s guess and see the sentence it read.
+Sumi is a conversation app for Apple Silicon Macs. Ask for a weekend plan and it can combine what you’ve told it with current venue listings. The answer links to the venue. A small red mark opens the words that shaped the recommendation, their date, and **Not true anymore**.
 
-[Download the latest Mac release](https://github.com/pranavdulepet/sumi/releases/latest) · [Watch ten walkthroughs](docs/walkthroughs.md) · [Build the current branch](docs/development.md)
+[Download the latest Mac release](https://github.com/pranavdulepet/sumi/releases/latest) · [Watch ten walkthroughs](docs/walkthroughs.md) · [Build this branch](docs/development.md)
 
-## Open your notebook
+## Start a conversation
 
-On macOS 14 or later, unzip the download and move Sumi to Applications. The downloadable app uses an ad-hoc signature. macOS may require approval to open it and to access an existing notebook’s Keychain item after upgrading.
+On macOS 14 or later, unzip Sumi and move it to Applications. The app uses an ad-hoc signature. macOS may ask for approval to open it or to access an existing notebook’s Keychain item after an upgrade.
 
-Draw your mark. Choose **Continue with ChatGPT** to use your eligible plan, or **Think on this Mac instead** to use an installed model or download a verified one. Once connected, Sumi opens a sheet where you can ask your first question.
+Choose **Continue with ChatGPT** to connect an eligible plan, or **Think on this Mac instead** to use a local model. Draw a stroke for your seal, then write on the open sheet. Return sends. Shift-Return adds a line. **Sheets** (⌘O) reopens a conversation or starts a new one. Importing earlier conversations is optional.
 
-## At the Desk
+Try telling Sumi “I live in Boston. On weekends I love hands-on printmaking workshops.” Open a fresh sheet and ask “What should I do this weekend?” Sumi resolves the weekend on your Mac, shows the public search query, and uses Exa’s keyless search endpoint when you click **Search the web**. If it needs a city, it asks. A dated venue excerpt accompanies the recommendation when available. Check **Automatically look up weekend listings** in Settings to skip the query preview for future weekend plans.
 
-Press Return to send and Shift-Return for a new line. Ask a follow-up on the same sheet, or open **Sheets** (⌘O) to start again. Sumi can select a calculator, look up civil dates on your Mac, and retrieve dated passages from earlier conversations. For example, tell Sumi your class budget on one sheet, then ask on another how much you can spend per class. **Behind this reply** shows the tools, model and method used.
+## Memory you can inspect
 
-Tell Sumi how you like recurring work done. It can name a skill and save your instruction automatically. A later instruction can update that skill. When a local model is available, Sumi can also consolidate repeated requests while your Mac is idle and plugged in. In the Scroll, you can inspect, edit or remove a method. To check what changed, ask Sumi to show your earlier instructions in order.
+**What Sumi knows** (⌘K) shows dated notes, approved entries, earlier memories and saved methods. Sumi recognizes explicit statements such as a home city, weekend preference, or “My … is …” fact. A later statement about the same subject can supersede one you made earlier. A preference you retire disappears from current retrieval. The earlier statement and the answer that used it remain readable. **Correct this reply** lets you review Sumi’s interpretation and try the correction on the next decision.
 
-**Correct this reply** opens the guided correction flow. You can stamp an editable preference and try it on a sealed decision. The regular conversation works before you do any of that.
+An explicit recurring instruction can become a named skill immediately. Similar requests on three separate days, or positive feedback on a multi-step result, can lead to a skill during idle time. New skills have a portable `SKILL.md`. Earlier Markdown skills remain readable. An idle pass archives learned methods after 60 days without use.
 
-Use **Places** or ⌘1–4 for the Desk, Scroll, Mirror and Seal. The Mirror counts scored guesses and lets you inspect each verdict. The Seal manages access for agents you connect. Open **Settings** with ⌘, to change your thinking setup, manage sources or bring in a chat export. Importing history is optional.
+While the Mac is idle and plugged in, Sumi can test a compact set of recurring memories against later conversation turns. It compares the local model’s predictions with and without the proposed change. A lower aggregate score keeps the previous core. Direct corrections take effect immediately. A new notebook needs enough distinct days and held-out follow-ups before a core is promoted.
 
-## Models and files
+## Models, search and files
 
-In ChatGPT mode, the passages needed for an answer go to OpenAI. Sumi uses an available local model for tool selection and simple replies, and the connected plan for more involved requests. With no local model available, the plan can handle selection as well as the response. Select **Keep this sheet local** before entering private material. A private sheet requires local inference for its replies. In local mode, all conversation turns use the local model. Other provider connections in Settings support specific background jobs.
+Sumi can select a calculator, a civil-date calculation, earlier passages, a saved skill or web search. The conversation renders lists, tables and bar charts. **Behind this reply** shows the model and tools. **Settings** (⌘,) manages intelligence, agent access, readings and chat imports.
 
-Your notebook lives in `~/Sumi` by default. Drafts live in `desk/`, readable conversations in `desk/conversations/`, and editable skills in `scroll/skills/`. These Markdown files are readable by anyone with access to that folder. The encrypted database in `.sumi/` holds observations, conversation state and scores. macOS Keychain holds the database key and optional provider credentials. Keep your login Keychain with your notebook backup.
+In ChatGPT mode, OpenAI receives the passages needed for the request. Sumi can use a local model for selection and quick replies, a fast eligible plan model when available, and the main plan model for deeper work. A private sheet requires local inference. Local mode keeps inference on the Mac. An approved web search sends its public query to Exa. An explicitly offline sheet disables search. Other provider connections support specific background jobs.
 
-The source is MIT licensed. Bundled assets and runtime notices are under [licenses](licenses/). See [Contributing](CONTRIBUTING.md) for feedback and code changes.
+Your notebook lives in `~/Sumi` by default. Read conversations in `desk/conversations/`, dated notes in `desk/memories.md`, the promoted core in `desk/core.md`, and skills in `scroll/skills/`. These Markdown files are readable by anyone with access to the folder. The encrypted database in `.sumi/` holds the working state. macOS Keychain holds its key and optional provider credentials. Keep your login Keychain with your notebook backup.
+
+Sumi is MIT licensed. Bundled art and runtime notices are under [licenses](licenses/). See [Contributing](CONTRIBUTING.md) for feedback and code changes.

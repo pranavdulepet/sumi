@@ -67,7 +67,12 @@ pub fn think(
     if !selected(model) {
         return crate::models::infer_with(model, system, &input.to_string(), limit, schema);
     }
-    if s.get("model")? != *model {
+    let connected = s.get("model")?;
+    if connected != *model
+        && !(selected(&connected)
+            && model["name"].is_string()
+            && connected["fast"] == model["name"])
+    {
         return Err("The notebook's thinking setting changed. Try again.".into());
     }
     let input = clean(input)?;
@@ -133,7 +138,18 @@ fn verify_at(api: &str, token: &str) -> Res<Value> {
     {
         return Err("ChatGPT didn't finish the connection check. Try again.".into());
     }
-    Ok(json!({"name":name,"runtime":"ChatGPT"}))
+    let fast = list["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["visibility"] == "list")
+        .filter_map(|m| m["slug"].as_str())
+        .find(|id| id != &name && ["mini", "instant", "spark"].iter().any(|k| id.contains(k)));
+    let mut model = json!({"name":name,"runtime":"ChatGPT"});
+    if let Some(fast) = fast {
+        model["fast"] = json!(fast);
+    }
+    Ok(model)
 }
 
 fn failure(err: ureq::Error) -> String {
