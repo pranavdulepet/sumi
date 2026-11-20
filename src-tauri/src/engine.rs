@@ -301,8 +301,13 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
             )),
         }
     }
-    let m = s.get("model")?;
-    let cloud = if idle_only && !plan::selected(&m) {
+    let primary = s.get("model")?;
+    let m = if idle_only && plan::selected(&primary) {
+        crate::conversation::local_model(s).unwrap_or_else(|| primary.clone())
+    } else {
+        primary.clone()
+    };
+    let cloud = if idle_only && !plan::selected(&primary) {
         crate::providers::backtest_provider(s)?
     } else {
         None

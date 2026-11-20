@@ -1,4 +1,5 @@
-import {Attachments,readFiles} from './Attachments';
+import {SheetImage} from './SheetImage';
+import {Attachments, readFiles} from './Attachments';
 import {Sources} from './Onboarding';
 import {listen} from '@tauri-apps/api/event';
 import {ExportArrival} from './ExportArrival';
@@ -40,23 +41,33 @@ export function Desk({
     [settled, setSettled] = useState(''),
     [archive, showArchive] = useState(false),
     [breakOpen, open] = useState(false);
-  const [files,setFiles]=useState<Row[]>([]);
-  const [shareFiles,share]=useState(false);
-  const [importing,openImport]=useState(false);
-  const [readingFile,reading]=useState(false);
-  const fileLock=useRef(false);
-  async function addFiles(list:File[]){
-    if(fileLock.current || sending.current || !list.length)return;
-    fileLock.current=true;reading(true);setError('');
-    try{const newFiles=await readFiles(list,4-files.length);setFiles(v=>[...v,...newFiles]);}
-    catch(e){setError(String(e));}finally{fileLock.current=false;reading(false);}
+  const [files, setFiles] = useState<Row[]>([]);
+  const [shareFiles, share] = useState(false);
+  const [importing, openImport] = useState(false);
+  const [readingFile, reading] = useState(false);
+  const fileLock = useRef(false);
+  async function addFiles(list: File[]) {
+    if (fileLock.current || sending.current || !list.length) return;
+    fileLock.current = true;
+    reading(true);
+    setError('');
+    try {
+      const newFiles = await readFiles(list, 4 - files.length);
+      setFiles(v => [...v, ...newFiles]);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      fileLock.current = false;
+      reading(false);
+    }
   }
   const [partial, setPartial] = useState('');
   const sending = useRef(false);
   const pending = useRef<{text: string; id: string} | null>(null);
   const turns: Row[] = data.chat?.turns || [];
   const leaf = useRef<HTMLDivElement>(null);
-  async function send() {
+  const [reviewQuestion, review] = useState('');
+  async function send(approvedQuestion?: string) {
     if (!text.trim() || sending.current || busy || fileLock.current) return;
     sending.current = true;
     setBusy(true);
@@ -66,17 +77,35 @@ export function Desk({
       pending.current = {text, id: crypto.randomUUID().replaceAll('-', '')};
     let stop: (() => void) | undefined;
     try {
-      if ((window as Window & {__TAURI_INTERNALS__?: {transformCallback?: unknown}}).__TAURI_INTERNALS__?.transformCallback) {
-        stop = await listen<{turn: string; delta: string}>('reply-delta', event => {
-          if (event.payload.turn === pending.current?.id) setPartial(v => v + event.payload.delta);
-        });
+      if (
+        (
+          window as Window & {
+            __TAURI_INTERNALS__?: {transformCallback?: unknown};
+          }
+        ).__TAURI_INTERNALS__?.transformCallback
+      ) {
+        stop = await listen<{turn: string; delta: string}>(
+          'reply-delta',
+          event => {
+            if (event.payload.turn === pending.current?.id)
+              setPartial(v => v + event.payload.delta);
+          },
+        );
       }
-      await act('askSheet', {
+      const result = await act('askSheet', {
+        approvedQuestion,
         sheet: data.current,
         turn: pending.current.id,
         text,
-        private: privateSheet,files,shareFiles,
+        private: privateSheet,
+        files,
+        shareFiles,
       });
+      if (result?.reviewQuestion) {
+        review(result.reviewQuestion);
+        return;
+      }
+      review('');
       const turn = pending.current.id;
       requestAnimationFrame(() => {
         const reply = leaf.current?.querySelector<HTMLElement>(
@@ -87,7 +116,8 @@ export function Desk({
           reply.scrollIntoView({block: 'nearest'});
         }
       });
-      setFiles([]);share(false);
+      setFiles([]);
+      share(false);
       setText('');
       ink.dismiss();
       setCaret(0);
@@ -147,6 +177,7 @@ export function Desk({
           : '';
   const verdict = data.scores.find((r: Row) => r.id === sealed?.id);
   function change(v: string) {
+    review('');
     setText(v);
     void onSave(data.current, v).catch(e => setError(String(e)));
   }
@@ -154,9 +185,10 @@ export function Desk({
     const el = field.current;
     if (el) {
       el.style.height = 'auto';
-      el.style.height = Math.max(150, el.scrollHeight) + 'px';
+      el.style.height =
+        Math.max(turns.length ? 80 : 135, el.scrollHeight) + 'px';
     }
-  }, [text]);
+  }, [text, turns.length]);
   const decision =
     /\b(should i|should we|whether|decide|do i|do we|or should)\b/i.test(text);
   const paragraph = paragraphAt(text, caret);
@@ -181,7 +213,18 @@ export function Desk({
       ? candidate
       : undefined;
   return (
-    <main className="page desk" onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}} onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();void addFiles(Array.from(e.dataTransfer.files));}}}>
+    <main
+      className="page desk"
+      onDragOver={e => {
+        if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+      }}
+      onDrop={e => {
+        if (e.dataTransfer.files.length) {
+          e.preventDefault();
+          void addFiles(Array.from(e.dataTransfer.files));
+        }
+      }}
+    >
       <aside className="desk-margin">
         <time>
           {new Date().toLocaleDateString(undefined, {
@@ -193,7 +236,7 @@ export function Desk({
           <button
             className="ink-action ask"
             disabled={busy || readingFile || !text.trim()}
-            onClick={send}
+            onClick={() => send()}
           >
             <Stroke points={data.mark} />
             {busy ? 'Thinking…' : 'Ask Sumi'}
@@ -287,9 +330,31 @@ export function Desk({
             data-turn={t.id}
           >
             <p className="asked">{t.question}</p>
-            {!!t.files?.length && <small>{t.files.map((f:Row)=>f.name).join(' · ')}</small>}
+            {!!t.files?.length && (
+              <small>{t.files.map((f: Row) => f.name).join(' · ')}</small>
+            )}
+            {t.files
+              ?.filter((f: Row) => f.preview)
+              .map((f: Row, i: number) => (
+                <img
+                  className="attachment-preview"
+                  src={'data:image/jpeg;base64,' + f.preview}
+                  alt={f.name}
+                  key={i}
+                />
+              ))}
             <small>Sumi</small>
             <Reply
+              checklist={/checklist|check boxes|checkboxes/i.test(t.question)}
+              checks={t.checks}
+              onCheck={(item, value) => {
+                return act('checkItem', {
+                  sheet: data.current,
+                  turn: t.id,
+                  item,
+                  value,
+                }).catch(e => setError(String(e)));
+              }}
               text={
                 t.usedMemory
                   ? t.reply.replace(/^(.*?)([.!?])(?=\s|$)/, '$1$2 [[m1]]')
@@ -317,6 +382,7 @@ export function Desk({
                 );
               }}
             />
+            <SheetImage turn={t} sheet={data.current} act={act} />
             <SearchResult turn={t} sheet={data.current} act={act} />
             {t.timeline?.length > 0 && (
               <ol
@@ -354,7 +420,31 @@ export function Desk({
             )}
             <details className="receipt">
               <summary>Behind this reply</summary>
-              {t.id===turns.at(-1)?.id && !t.web && !t.timeline?.length && <button disabled={busy} onClick={async()=>{setBusy(true);try{await act('regenerate',{sheet:data.current,turn:t.id,attempt:crypto.randomUUID().replaceAll('-','')});}catch(e){setError(String(e));}finally{setBusy(false);}}}>Try this answer again</button>}
+              {t.id === turns.at(-1)?.id &&
+                !t.image &&
+                !t.imagePrompt &&
+                !t.web &&
+                !t.timeline?.length && (
+                  <button
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await act('regenerate', {
+                          sheet: data.current,
+                          turn: t.id,
+                          attempt: crypto.randomUUID().replaceAll('-', ''),
+                        });
+                      } catch (e) {
+                        setError(String(e));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Try this answer again
+                  </button>
+                )}
 
               <p>
                 {t.timeline?.length
@@ -392,7 +482,25 @@ export function Desk({
             </details>
           </article>
         ))}
-        {partial && busy && <article aria-label="Answer in progress"><small>Sumi</small><Reply text={partial} /></article>}
+        {partial && busy && (
+          <article aria-label="Answer in progress">
+            <small>Sumi</small>
+            <Reply text={partial} />
+          </article>
+        )}
+        {reviewQuestion && (
+          <aside className="import-offer">
+            <p>
+              This question is sensitive and there is no local model connected.
+              Send only the following words to OpenAI?
+            </p>
+            <blockquote>{reviewQuestion}</blockquote>
+            <button disabled={busy} onClick={() => send(reviewQuestion)}>
+              Send these words once
+            </button>
+            <button onClick={() => review('')}>Keep on my Mac</button>
+          </aside>
+        )}
         <div className="writing">
           {ghost && (
             <div className="ghost-layer" aria-hidden="true">
@@ -452,11 +560,61 @@ export function Desk({
           />
         </div>
 
-        {!sealed && <Attachments files={files} disabled={busy||readingFile} add={addFiles} remove={i=>setFiles(v=>v.filter((_,k)=>k!==i))}/>}
-        {!privateSheet && data.model?.runtime==='ChatGPT' && (files.length>0 || turns.some(t=>t.files?.length)) && <label className="check"><input type="checkbox" checked={shareFiles} onChange={e=>share(e.target.checked)}/>Allow OpenAI to read file excerpts for this reply</label>}
+        {!sealed && (
+          <Attachments
+            files={files}
+            disabled={busy || readingFile}
+            add={addFiles}
+            remove={i => setFiles(v => v.filter((_, k) => k !== i))}
+          />
+        )}
+        {!privateSheet &&
+          data.model?.runtime === 'ChatGPT' &&
+          (files.length > 0 || turns.some(t => t.files?.length)) && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={shareFiles}
+                onChange={e => share(e.target.checked)}
+              />
+              Share file excerpts and image previews with OpenAI for this reply
+            </label>
+          )}
         {readingFile && <small role="status">Reading on this Mac…</small>}
-        {data.importOffer===data.current && !importing && <aside className="import-offer"><p>Want me to read your past ChatGPT or Claude conversations?</p><button onClick={async()=>{await act('dismissImportOffer');openImport(true);}}>Read past chats</button><button onClick={()=>act('dismissImportOffer')}>Maybe later</button></aside>}
-        {importing && <section><Sources sources={data.sources} request={data.requestedExport} act={act}/><button onClick={async()=>{await act('read');openImport(false);}}>Read selected sources</button><button onClick={()=>openImport(false)}>Close</button></section>}
+        {data.importOffer === data.current && !importing && (
+          <aside className="import-offer">
+            <p>Want me to read your past ChatGPT or Claude conversations?</p>
+            <button
+              onClick={async () => {
+                await act('dismissImportOffer');
+                openImport(true);
+              }}
+            >
+              Read past chats
+            </button>
+            <button onClick={() => act('dismissImportOffer')}>
+              Maybe later
+            </button>
+          </aside>
+        )}
+        {importing && (
+          <section>
+            <Sources
+              sources={data.sources}
+              request={data.requestedExport}
+              act={act}
+            />
+            <button
+              onClick={async () => {
+                await act('read');
+                openImport(false);
+              }}
+            >
+              Read selected sources
+            </button>
+            <button onClick={() => openImport(false)}>Close</button>
+          </section>
+        )}
         {ghost && (
           <p className="small" aria-live="polite">
             <kbd>Tab</kbd> accepts the light ink

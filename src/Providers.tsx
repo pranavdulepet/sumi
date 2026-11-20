@@ -1,14 +1,15 @@
 import {useState} from 'react';
 import {type Action, type Row} from './api';
 export function Providers({data, act}: {data: Row; act: Action}) {
-  const prior=data.providers.find((r:Row)=>r.id==='OpenRouter');
+  const prior = data.providers.find((r: Row) => r.id === 'OpenRouter');
   const [kind, pick] = useState('OpenRouter'),
     [model, setModel] = useState(prior?.model || ''),
+    [imageModel, setImageModel] = useState(prior?.imageModel || ''),
     [secret, setSecret] = useState(''),
     [endpoint, setEndpoint] = useState(''),
     [cap, limit] = useState(prior?.cap || 0),
     [enabled, enable] = useState(!!prior?.enabled),
-    [conversation,allowConversation]=useState(!!prior?.conversation),
+    [conversation, allowConversation] = useState(!!prior?.conversation),
     [quiz, allowQuiz] = useState(false),
     [backtest, allowBacktest] = useState(!!prior?.backtest),
     [busy, wait] = useState(false),
@@ -16,6 +17,7 @@ export function Providers({data, act}: {data: Row; act: Action}) {
   function choose(k: string) {
     const old = data.providers.find((r: Row) => r.id === k);
     pick(k);
+    setImageModel(old?.imageModel || '');
     setModel(old?.model || '');
     setSecret('');
     setEndpoint(old?.endpoint || '');
@@ -118,7 +120,27 @@ export function Providers({data, act}: {data: Row; act: Action}) {
           ? 'Allow cleaned grading decisions'
           : 'Allow idle reflection'}
       </label>
-      {kind==='OpenRouter' && <label className="check"><input type="checkbox" checked={conversation} onChange={e=>allowConversation(e.target.checked)}/>Use this model for deeper conversations when ChatGPT is connected. OpenRouter receives the passages used and may charge your account.</label>}
+      {kind === 'OpenRouter' && (
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={conversation}
+            onChange={e => allowConversation(e.target.checked)}
+          />
+          Use this model for deeper conversations when ChatGPT is connected.
+          OpenRouter receives the passages used and may charge your account.
+        </label>
+      )}
+      {kind === 'OpenRouter' && (
+        <label>
+          Image model ID (optional)
+          <input
+            value={imageModel}
+            onChange={e => setImageModel(e.target.value)}
+            placeholder="Model with image output"
+          />
+        </label>
+      )}
       {kind === 'Jev' && enabled && (
         <label className="check">
           <input
@@ -149,7 +171,9 @@ export function Providers({data, act}: {data: Row; act: Action}) {
               key: secret,
               endpoint,
               cap,
-              enabled,conversation,
+              enabled,
+              conversation,
+              imageModel,
               quiz,
               backtest,
             });

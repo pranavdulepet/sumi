@@ -50,14 +50,10 @@ export function Models({
     installed.find(
       m => m.name === model?.name && m.runtime === model?.runtime,
     ) ??
-    installed.find(
-      m =>
-        m.name === 'llama3.2:3b' &&
-        (!fit?.memory || m.bytes * 2 + 4e9 < fit.memory),
-    ) ??
-    installed.find(
-      m => m.bytes && (!fit?.memory || m.bytes * 2 + 4e9 < fit.memory),
-    );
+    installed.find(m => m.name === fit?.recommendation?.name) ??
+    [...installed]
+      .sort((a, b) => (b.bytes || 0) - (a.bytes || 0))
+      .find(m => !m.bytes || !fit?.memory || m.bytes * 1.3 + 3e9 < fit.memory);
   function modelRow(m: Row) {
     return (
       <button
@@ -116,10 +112,14 @@ export function Models({
           : !enoughSpace
             ? 'More disk space needed'
             : download.cached
-              ? 'Use '+download.label
+              ? 'Use ' + download.label
               : download.bytes
-                ? 'Resume '+download.label+' download'
-                : 'Download '+download.label+' · '+(download.total/1e9).toFixed(1)+' GB'}
+                ? 'Resume ' + download.label + ' download'
+                : 'Download ' +
+                  download.label +
+                  ' · ' +
+                  (download.total / 1e9).toFixed(1) +
+                  ' GB'}
       </button>
       {working === 'gguf' && !download.cached && (
         <div className="model-download">

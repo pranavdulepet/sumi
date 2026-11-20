@@ -187,6 +187,9 @@ fn historical_question(q: &str) -> bool {
         "did i decide",
         "remind me",
         "in my notebook",
+        "imported chat",
+        "past chat",
+        "chat export",
     ]
     .iter()
     .any(|v| q.contains(v))
@@ -247,6 +250,23 @@ pub fn select(
     candidates: &[Value],
     now: DateTime<Local>,
 ) -> Res<Value> {
+    let simple = q
+        .trim()
+        .trim_end_matches(['?', '!', '.'])
+        .to_ascii_lowercase();
+    if matches!(
+        simple.as_str(),
+        "hi" | "hello" | "thank you" | "thanks" | "good morning"
+    ) {
+        return Ok(json!({"quick":true,"selector":"built-in","skill":0,"days":0}));
+    }
+    let expr = simple
+        .strip_prefix("calculate ")
+        .or_else(|| simple.strip_prefix("what is "))
+        .unwrap_or(&simple);
+    if expr.bytes().any(|c| b"*/+-".contains(&c)) && calculate(expr).is_some() {
+        return Ok(json!({"quick":true,"selector":"built-in","math":expr,"days":0,"skill":0}));
+    }
     let properties = json!({"web":{"type":"string"},"math":{"type":"string"},"date":{"type":"string"},"days":{"type":"integer"},"recall":{"type":"string"},"skill":{"type":"integer"},"quick":{"type":"boolean"}});
     let schema = json!({"type":"object","properties":properties,"required":["math","date","days","recall","skill","quick","web"],"additionalProperties":false});
     let menu: Vec<_> = candidates

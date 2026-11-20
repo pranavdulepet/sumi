@@ -76,7 +76,7 @@ pub fn configure(s: &Store, a: &Value) -> Res<()> {
     }
     s.put(
         "provider",
-        &json!({"id":k,"model":model,"cap":cap,"endpoint":endpoint,"enabled":a["enabled"]==true,"conversation":k=="OpenRouter" && a["conversation"]==true,"quiz":k=="Jev" && a["quiz"]==true,"backtest":k!="Jev" && a["backtest"]==true}),
+        &json!({"id":k,"model":model,"cap":cap,"endpoint":endpoint,"enabled":a["enabled"]==true,"imageModel":a["imageModel"].as_str().filter(|v|k=="OpenRouter" && v.len()<=160).unwrap_or(""),"conversation":k=="OpenRouter" && a["conversation"]==true,"quiz":k=="Jev" && a["quiz"]==true,"backtest":k!="Jev" && a["backtest"]==true}),
     )?;
     Ok(())
 }
@@ -159,6 +159,13 @@ pub(crate) fn reserve(s: &Store, p: &Value) -> Res<()> {
         .unwrap_or(0);
     if p["enabled"] != true || spent >= p["cap"].as_u64().unwrap_or(0) {
         return Err("Monthly request cap reached or provider switched off.".into());
+    }
+    if crate::local::background() {
+        let daily = format!("idleBudget/{}", chrono::Local::now().date_naive());
+        let used=tx.execute("INSERT INTO kv(k,v) VALUES(?,'1') ON CONFLICT(k) DO UPDATE SET v=cast(cast(v as integer)+1 as text) WHERE cast(v as integer)<24",[daily]).msg()?;
+        if used == 0 {
+            return Err("Today’s 24 background provider requests have been used.".into());
+        }
     }
     tx.execute(
         "INSERT OR REPLACE INTO kv VALUES(?,?)",
@@ -795,4 +802,73 @@ pub fn quiz_choice(
     Ok(Some(
         json!({"guess":guess,"probability":probability,"model":raw["model"]}),
     ))
+}
+
+pub fn render_image(s: &Store, a: &Value) -> Res<Value> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use std::io::Read;
+    let _guard = s.edit.lock().unwrap();
+    let sheet = ident(a["sheet"].as_str().unwrap_or(""))?;
+    let key = ident(a["turn"].as_str().unwrap_or(""))?;
+    let mut chat = s.doc("chat", sheet)?;
+    if chat["networkClosed"] == true || s.doc("sheet", sheet)?["private"] == true {
+        return Err("This sheet is offline.".into());
+    }
+    let turn = chat["turns"]
+        .as_array_mut()
+        .and_then(|v| v.iter_mut().find(|t| t["id"] == key))
+        .ok_or("Missing image request.")?;
+    if turn["image"].is_string() {
+        return Ok(Value::Null);
+    }
+    let prompt = turn["imagePrompt"]
+        .as_str()
+        .filter(|v| a["prompt"] == *v)
+        .ok_or("Review the image prompt first.")?;
+    if crate::local::sensitive(prompt) || crate::sources::audit(prompt).as_deref() != Some(prompt) {
+        return Err("This prompt needs to stay on your Mac.".into());
+    }
+    let mut provider = s.doc("provider", "OpenRouter")?;
+    let model = provider["imageModel"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or("Connect an image model in Settings.")?
+        .to_string();
+    let credential = credential(s, "OpenRouter")?;
+    let secret = credential["key"].as_str().ok_or("Reconnect OpenRouter.")?;
+    provider["enabled"] = json!(true);
+    reserve(s, &provider)?;
+    let response=http().post("https://openrouter.ai/api/v1/images").set("Authorization",&format!("Bearer {secret}"))
+        .send_json(json!({"model":model,"prompt":prompt,"n":1,"output_format":"png","response_format":"b64_json"})).map_err(|_|"OpenRouter could not return an image. Check your provider activity before trying again.")?;
+    let body: Value = serde_json::from_reader(response.into_reader().take(12_000_000))
+        .map_err(|_| "The image response exceeded the notebook limit or could not be read.")?;
+    let encoded = body
+        .pointer("/data/0/b64_json")
+        .and_then(Value::as_str)
+        .ok_or("OpenRouter returned no image.")?;
+    let bytes = STANDARD.decode(encoded).msg()?;
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("The provider returned an unsupported image format.".into());
+    }
+    let dir = s.root.join("desk/images");
+    std::fs::create_dir_all(&dir).msg()?;
+    atomic(&dir.join(format!("{key}.png")), &bytes)?;
+    turn["image"] = json!(key);
+    turn["runtime"] = json!("OpenRouter");
+    turn["model"] = json!(model);
+    turn["reply"] = json!("");
+    turn["imagePrompt"] = Value::Null;
+    chat["pendingFile"] = json!(true);
+    s.put("chat", &chat)?;
+    crate::conversation::publish(s, &mut chat)?;
+    Ok(Value::Null)
+}
+pub fn image_data(s: &Store, a: &Value) -> Res<Value> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let key = ident(a["id"].as_str().unwrap_or(""))?;
+    let bytes = std::fs::read(s.root.join("desk/images").join(format!("{key}.png"))).msg()?;
+    Ok(json!(format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(bytes)
+    )))
 }

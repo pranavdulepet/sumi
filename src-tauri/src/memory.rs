@@ -175,7 +175,17 @@ pub fn current(n: &Value) -> bool {
 }
 pub fn relevant(s: &Store, q: &str, outing: bool, hosted: bool) -> Res<Vec<Value>> {
     let terms = words(q);
-    let mut notes: Vec<_> = timeline(s)?
+    let all = timeline(s)?;
+    let mut evidence = HashMap::<(String, String), std::collections::HashSet<String>>::new();
+    for n in &all {
+        if let Some(day) = n["learnedAt"].as_str().and_then(|v| v.get(..10)) {
+            evidence
+                .entry((n["topic"].to_string(), n["value"].to_string()))
+                .or_default()
+                .insert(day.into());
+        }
+    }
+    let mut notes: Vec<_> = all
         .into_iter()
         .filter(|n| {
             current(n)
@@ -219,7 +229,11 @@ pub fn relevant(s: &Store, q: &str, outing: bool, hosted: bool) -> Res<Vec<Value
             .and_then(crate::scroll::instant)
             .map(|at| (chrono::Utc::now() - at).num_days().max(0))
             .unwrap_or(0);
+        let repeats = evidence
+            .get(&(n["topic"].to_string(), n["value"].to_string()))
+            .map_or(0, |v| v.len().saturating_sub(1).min(6));
         let score = 4. * overlap as f64
+            + (repeats as f64).ln_1p()
             + 2. * n["importance"].as_f64().unwrap_or(0.5)
             + 0.5f64.powf(
                 age as f64
@@ -316,7 +330,7 @@ pub fn project(s: &Store) -> Res<()> {
 pub fn close(s: &Store, id: &str) -> Res<Value> {
     let _lock = s.edit.lock().unwrap();
     let mut n = s.doc("note", ident(id)?)?;
-    if n["validUntil"].is_null() {
+    if current(&n) {
         n["validUntil"] = json!(now());
         s.put("note", &n)?;
     }
@@ -336,6 +350,11 @@ pub fn revise(s: &Store, a: &Value, remove: bool) -> Res<Value> {
         s.put("note", &n)?;
     }
     if remove {
+        s.set(
+            &format!("forgotNote/{}", hash(note["text"].as_str().unwrap_or(""))),
+            &json!(true),
+        )?;
+        s.del("noteCheck", key)?;
         s.del("note", key)?;
     } else {
         let text = a["text"]
@@ -355,7 +374,17 @@ pub fn revise(s: &Store, a: &Value, remove: bool) -> Res<Value> {
         .unwrap_or_else(|| note.clone());
         let now = now();
         replacement["id"] = json!(id());
-        replacement["topic"] = note["topic"].clone();
+        if note["topic"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("project/") || t.starts_with("person/"))
+            && replacement["topic"] != note["topic"]
+        {
+            let mut previous = note.clone();
+            previous["validUntil"] = json!(now);
+            s.put("note", &previous)?;
+        } else {
+            replacement["topic"] = note["topic"].clone();
+        }
         replacement["text"] = json!(text);
         if replacement["value"] == note["value"] {
             replacement["value"] = json!(text);
@@ -364,7 +393,13 @@ pub fn revise(s: &Store, a: &Value, remove: bool) -> Res<Value> {
         replacement["validFrom"] = json!(now);
         replacement["sheet"] = note["sheet"].clone();
         replacement["importance"] = json!(1.0);
-        replacement["validUntil"] = Value::Null;
+        replacement["validUntil"] = if replacement["scale"] == "phase" {
+            json!((Local::now() + chrono::Duration::days(35)).to_rfc3339())
+        } else if replacement["scale"] == "moment" {
+            json!((Local::now() + chrono::Duration::days(2)).to_rfc3339())
+        } else {
+            Value::Null
+        };
         s.put("note", &replacement)?;
     }
     project(s)?;
@@ -504,6 +539,159 @@ pub fn dream_proposal(s: &Store, primary: &Value) -> Res<()> {
     }
     Ok(())
 }
+// An idle observation must quote a real user turn and survive a later, disjoint
+// prediction trial. The model cannot write instructions into the core.
+pub fn dream_transcript(s: &Store, primary: &Value, quiet: impl Fn() -> bool + Copy) -> Res<()> {
+    if primary.is_null() || !quiet() {
+        return Ok(());
+    }
+    let local = if crate::plan::selected(primary) {
+        crate::conversation::local_model(s)
+    } else {
+        Some(primary.clone())
+    };
+    let Some(model) = local else { return Ok(()) };
+    let sources: Vec<(String, String, String, String, bool)> = {
+        let db = s.db.lock().unwrap();
+        let mut st=db.prepare("SELECT c.id,json_extract(t.value,'$.id'),json_extract(t.value,'$.question'),json_extract(t.value,'$.at'),coalesce(json_extract(c.v,'$.networkClosed'),0) FROM docs c JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND json_extract(t.value,'$.at') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kv WHERE k='examined/'||json_extract(t.value,'$.id')) AND julianday(json_extract(t.value,'$.at')) < julianday('now','-1 hour') ORDER BY julianday(json_extract(t.value,'$.at')) LIMIT 5").msg()?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .msg()?;
+        rows.collect::<rusqlite::Result<_>>().msg()?
+    };
+    for (sheet, turn, text, at, restricted) in sources {
+        if !quiet() {
+            return Ok(());
+        }
+        let key = format!("examined/{turn}");
+        if text.trim_end().ends_with('?')
+            || crate::sources::audit(&text).is_none()
+            || timeline(s)?
+                .iter()
+                .any(|n| text.contains(n["text"].as_str().unwrap_or("")))
+        {
+            s.set(&key, &json!(true))?;
+            continue;
+        }
+        let cases = holdout(s, &at)?;
+        if cases.len() < 2 {
+            continue;
+        }
+        let schema = json!({"type":"object","properties":{"quote":{"type":"string"},"topic":{"type":"string"},"scope":{"type":"string","enum":["person","project","preference","none"]}},"required":["quote","topic","scope"],"additionalProperties":false});
+        let raw=crate::plan::think(s,&model,"local dream","Find one explicit, lasting statement about this person's life or preferences. Quote their exact words, without interpretation. Return none if uncertain, hypothetical, or a one-off. Topic is a short subject name.",&json!({"words":text}),160,Some(&schema))?;
+        let result: Value = serde_json::from_str(&raw).msg()?;
+        let quote = result["quote"].as_str().unwrap_or("").trim();
+        let topic = result["topic"].as_str().unwrap_or("").trim();
+        let scope = result["scope"].as_str().unwrap_or("");
+        if !matches!(scope, "person" | "project" | "preference")
+            || quote.chars().count() < 8
+            || quote.chars().count() > 320
+            || !text.contains(quote)
+            || topic.is_empty()
+            || topic.len() > 60
+            || s.get(&format!("forgotNote/{}", hash(quote)))? == true
+        {
+            s.set(&key, &json!(true))?;
+            continue;
+        }
+        let baseline = core_notes(s, false)?;
+        let until = if scope == "project" {
+            crate::scroll::instant(&at).map(|d| (d + chrono::Duration::days(35)).to_rfc3339())
+        } else {
+            None
+        };
+        let note = json!({"id":&hash(&turn)[..32],"sheet":sheet,"topic":format!("{scope}/{topic}"),"value":quote,"text":quote,"learnedAt":now(),"validFrom":at,"validUntil":until,"private":true,"restricted":restricted,"scale":if scope=="project"{"phase"}else{"trait"},"fromDream":true,"dates":[]});
+        let mut candidate = baseline.clone();
+        candidate.push(note.clone());
+        let Some(grades) = replay(s, &model, &baseline, &candidate, &cases, quiet)? else {
+            return Ok(());
+        };
+        let Ok(_edit) = s.edit.try_lock() else {
+            return Ok(());
+        };
+        if core_notes(s, false)? != baseline
+            || s.get(&format!("forgotNote/{}", hash(quote)))? == true
+        {
+            return Ok(());
+        }
+        let existing = timeline(s)?;
+        if grades[1] >= grades[0]
+            && !existing.iter().any(|n| {
+                n["text"] == quote || (n["topic"] == note["topic"] && n["importance"] == 1.0)
+            })
+        {
+            s.put("note", &note)?;
+            project(s)?;
+        }
+        s.set(&key, &json!(true))?;
+        break;
+    }
+    Ok(())
+}
+// Recheck an active memory against a later human statement. Unrelated replies
+// and guesses by the assistant never count toward measured precision.
+pub fn audit_note(s: &Store, primary: &Value, quiet: impl Fn() -> bool) -> Res<()> {
+    let today = Local::now().date_naive().to_string();
+    if !quiet() || primary.is_null() || s.get("auditedNotesDay")? == today {
+        return Ok(());
+    }
+    let model = if crate::plan::selected(primary) {
+        crate::conversation::local_model(s)
+    } else {
+        Some(primary.clone())
+    };
+    let Some(model) = model else { return Ok(()) };
+    let mut notes = timeline(s)?;
+    notes.retain(current);
+    for note in notes.iter().take(20) {
+        let after = note["learnedAt"].as_str().and_then(crate::scroll::instant);
+        let words = note["text"].as_str().unwrap_or("");
+        let terms = crate::conversation::words(words);
+        let hits = desk_tools::recall(s, words, false, chrono::Utc::now(), "")?;
+        let later: Vec<_> = hits
+            .into_iter()
+            .filter(|p| {
+                p["when"].as_str().and_then(crate::scroll::instant) > after
+                    && !p["words"].as_str().unwrap_or("").ends_with('?')
+                    && terms
+                        .intersection(&crate::conversation::words(
+                            p["words"].as_str().unwrap_or(""),
+                        ))
+                        .count()
+                        >= 2
+            })
+            .collect();
+        if later.is_empty() {
+            continue;
+        }
+        let schema = json!({"type":"object","properties":{"result":{"type":"string","enum":["confirmed","contradicted","unknown"]},"quote":{"type":"string"}},"required":["result","quote"],"additionalProperties":false});
+        let raw=crate::plan::think(s,&model,"memory check","Does the person's later statement explicitly confirm or contradict the dated memory? If ambiguous, answer unknown. Give an exact quote from the later statement as evidence.",&json!({"memory":words,"later":later}),120,Some(&schema))?;
+        let out: Value = serde_json::from_str(&raw).msg()?;
+        let quote = out["quote"].as_str().unwrap_or("");
+        if quiet()
+            && matches!(out["result"].as_str(), Some("confirmed" | "contradicted"))
+            && quote.len() >= 5
+            && later
+                .iter()
+                .any(|p| p["words"].as_str().is_some_and(|t| t.contains(quote)))
+        {
+            let _edit = s.edit.lock().unwrap();
+            if s.optional_doc("note", note["id"].as_str().unwrap_or(""))?
+                .is_some()
+            {
+                s.put(
+                    "noteCheck",
+                    &json!({"id":note["id"],"checked":now(),"result":out["result"]}),
+                )?;
+            }
+        }
+        break;
+    }
+    s.set("auditedNotesDay", &json!(today))
+}
+
 pub fn dream_core(s: &Store, primary: &Value, idle: impl Fn() -> bool) -> Res<()> {
     if primary.is_null() {
         return Ok(());
@@ -600,7 +788,7 @@ mod integration {
             for n in observe(
                 "On weekends I love making woodblock prints.",
                 "evidence",
-                (start + chrono::Duration::days(day)),
+                start + chrono::Duration::days(day),
                 true,
                 false,
             ) {
@@ -629,5 +817,35 @@ mod integration {
             trial["candidate"].as_i64() >= trial["baseline"].as_i64()
         );
         assert!(core_notes(&s, true).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pages {
+    use super::*;
+    #[test]
+    fn phases_expire_traits_persist_and_removing_a_successor_does_not_reopen_the_past() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::with_key(dir.path().into(), &[4; 32]).unwrap();
+        crate::app::setup(&s).unwrap();
+        let at = Local::now() - chrono::Duration::days(40);
+        for words in [
+            "Maya owns design.",
+            "I am working on the exhibition.",
+            "Today I visited the gallery.",
+            "I live in Boston.",
+        ] {
+            let n = observe(words, &id(), at, true, true).remove(0);
+            s.put("note", &n).unwrap();
+        }
+        let current_home = observe("I moved to Salem.", &id(), Local::now(), true, true).remove(0);
+        s.put("note", &current_home).unwrap();
+        project(&s).unwrap();
+        let index = std::fs::read_to_string(s.root.join("desk/memories.md")).unwrap();
+        assert!(index.contains("Projects · the exhibition") && index.contains("People · Maya"));
+        assert!(relevant(&s, "exhibition", false, false).unwrap().is_empty());
+        assert!(!relevant(&s, "Maya", false, false).unwrap().is_empty());
+        revise(&s, &json!({"id":current_home["id"]}), true).unwrap();
+        assert!(relevant(&s, "weekend", true, false).unwrap().is_empty());
     }
 }

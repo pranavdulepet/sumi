@@ -7,10 +7,16 @@ use std::{io::Read, time::Duration};
 const URL: Option<&str> = option_env!("SUMI_CATALOG_URL");
 const KEY: Option<&str> = option_env!("SUMI_CATALOG_PUBLIC_KEY");
 pub fn configured() -> bool {
-    URL.is_some() && KEY.is_some()
+    URL.is_some() == KEY.is_some()
 }
 pub fn installed(s: &Store) -> Value {
-    s.get("catalog").ok().filter(|v|v["models"].is_array()).unwrap_or_else(||json!({"revision":1,"models":[{"name":"qwen3.6:35b-a3b","bytes":22134528992u64,"ram":32},{"name":"gemma4:12b","bytes":6975879296u64,"ram":16},{"name":"qwen3:4b","bytes":2500000000u64,"ram":8}]}))
+    s.get("catalog")
+        .ok()
+        .filter(|v| v["models"].is_array())
+        .unwrap_or_else(|| {
+            serde_json::from_str(include_str!("../../catalog/payload.json"))
+                .expect("invalid bundled model catalog")
+        })
 }
 pub fn verify(raw: &Value, key: &[u8], current: u64) -> Res<Value> {
     let payload = STANDARD
@@ -52,9 +58,15 @@ pub fn verify(raw: &Value, key: &[u8], current: u64) -> Res<Value> {
     Ok(data)
 }
 pub fn refresh(s: &Store) -> Res<()> {
-    let (Some(url), Some(key)) = (URL, KEY) else {
+    if !configured() {
         return Ok(());
-    };
+    }
+    let url = URL.unwrap_or(
+        "https://raw.githubusercontent.com/pranavdulepet/sumi/model-catalog/catalog/models.json",
+    );
+    let key = KEY
+        .unwrap_or(include_str!("../../catalog/publisher.pub"))
+        .trim();
     if s.get("catalogOff")? == true {
         return Ok(());
     }
@@ -92,4 +104,21 @@ pub fn refresh(s: &Store) -> Res<()> {
         s.set("catalogUpdated", &json!(now()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod publisher {
+    use super::*;
+    #[test]
+    fn shipped_catalog_signature_matches_its_exact_payload() {
+        let envelope: Value =
+            serde_json::from_str(include_str!("../../catalog/models.json")).unwrap();
+        let public = STANDARD
+            .decode(include_str!("../../catalog/publisher.pub").trim())
+            .unwrap();
+        assert_eq!(
+            verify(&envelope, &public, 1).unwrap(),
+            serde_json::from_str::<Value>(include_str!("../../catalog/payload.json")).unwrap()
+        );
+    }
 }

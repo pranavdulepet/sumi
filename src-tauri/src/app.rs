@@ -85,12 +85,24 @@ pub fn state(s: &Store) -> Res<Value> {
         correction["sealed"] = json!(guess);
         correction["question"] = json!(question);
     }
+    let mut chat = s.optional_doc("chat", k)?;
+    if let Some(turns) = chat.as_mut().and_then(|c| c["turns"].as_array_mut()) {
+        for turn in turns {
+            if let Some(files) = turn["files"].as_array_mut() {
+                for file in files {
+                    if let Some(obj) = file.as_object_mut() {
+                        obj.remove("text");
+                    }
+                }
+            }
+        }
+    }
     let scores = s.list("prediction")?;
     let entries = scroll::approved(s)?;
     let mut surprises = crate::mirror::reviews(&scores, &entries, chrono::Utc::now());
     surprises.truncate(3);
     Ok(
-        json!({"importOffer":s.get("importOffer")?,"notes":crate::memory::timeline(s)?,"autoListings":s.get("autoListings")?,"chat":s.optional_doc("chat",k)?,"skills":crate::conversation::skills(s)?,"firstCorrection":correction,"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"planUsage":s.get(&format!("budget/{}/ChatGPT",chrono::Utc::now().format("%Y-%m")))?, "providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
+        json!({"importOffer":s.get("importOffer")?,"notes":crate::memory::timeline(s)?,"autoListings":s.get("autoListings")?,"chat":chat,"skills":crate::conversation::skills(s)?,"firstCorrection":correction,"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"planUsage":s.get(&format!("budget/{}/ChatGPT",chrono::Utc::now().format("%Y-%m")))?, "providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
     )
 }
 pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
@@ -221,6 +233,9 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             s.set("importOffer", &json!(false))?;
             Ok(Value::Null)
         }
+        "checkItem" => crate::conversation::check_item(s, a),
+        "sheetImage" => crate::providers::image_data(s, a),
+        "renderImage" => crate::providers::render_image(s, a),
         "readAttachment" => crate::attachments::read(a),
         "regenerate" => crate::conversation::regenerate(s, a, &mut |_| {}),
         "askSheet" => crate::conversation::ask(s, a),

@@ -11,7 +11,7 @@ files = [
     "website/shippori.woff2", "website/zen.woff2",
 ]
 folders = [
-    "src", "public", "scripts", "tests", "prompts", "licenses", "docs",
+    "catalog", "src", "public", "scripts", "tests", "prompts", "licenses", "docs",
     "src-tauri/src", "src-tauri/capabilities", "src-tauri/icons",
 ]
 paths = [root / p for p in files]

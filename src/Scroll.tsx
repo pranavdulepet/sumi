@@ -84,28 +84,80 @@ function Entry({v, act, readonly}: {v: Row; act: Action; readonly: boolean}) {
     </article>
   );
 }
-function DatedNote({n,act}:{n:Row;act:Action}){
-  const [mode,choose]=useState(''),[draft,write]=useState(n.text);
-  const ended=n.validUntil && new Date(n.validUntil).getTime()<=Date.now();
-  return <details><summary>{n.text}</summary><small>Since {day(n.validFrom)}{n.validUntil && ' · until '+day(n.validUntil)} · learned {day(n.learnedAt)}</small>
-    {mode==='edit'?<form onSubmit={async e=>{e.preventDefault();await act('editNote',{id:n.id,text:draft});choose('');}}><label>Correct this memory<textarea required maxLength={320} value={draft} onChange={e=>write(e.target.value)}/></label><button>Save correction</button><button type="button" onClick={()=>choose('')}>Cancel</button></form>
-    :mode==='delete'?<><button onClick={()=>act('deleteNote',{id:n.id})}>Confirm removal</button><button onClick={()=>choose('')}>Cancel</button></>:<div className="inline">{!ended&&<><button onClick={()=>choose('edit')}>Edit memory</button><button onClick={()=>act('closeNote',{id:n.id})}>Not true anymore</button></>}<button onClick={()=>choose('delete')}>Remove memory</button></div>}
-  </details>;
+function DatedNote({n, act}: {n: Row; act: Action}) {
+  const [mode, choose] = useState(''),
+    [draft, write] = useState(n.text);
+  const ended = n.validUntil && new Date(n.validUntil).getTime() <= Date.now();
+  return (
+    <details>
+      <summary>{n.text}</summary>
+      <small>
+        Since {day(n.validFrom)}
+        {n.validUntil && ' · until ' + day(n.validUntil)} · learned{' '}
+        {day(n.learnedAt)}
+      </small>
+      {mode === 'edit' ? (
+        <form
+          onSubmit={async e => {
+            e.preventDefault();
+            await act('editNote', {id: n.id, text: draft});
+            choose('');
+          }}
+        >
+          <label>
+            Correct this memory
+            <textarea
+              required
+              maxLength={320}
+              value={draft}
+              onChange={e => write(e.target.value)}
+            />
+          </label>
+          <button>Save correction</button>
+          <button type="button" onClick={() => choose('')}>
+            Cancel
+          </button>
+        </form>
+      ) : mode === 'delete' ? (
+        <>
+          <button onClick={() => act('deleteNote', {id: n.id})}>
+            Confirm removal
+          </button>
+          <button onClick={() => choose('')}>Cancel</button>
+        </>
+      ) : (
+        <div className="inline">
+          {!ended && (
+            <>
+              <button onClick={() => choose('edit')}>Edit memory</button>
+              <button onClick={() => act('closeNote', {id: n.id})}>
+                Not true anymore
+              </button>
+            </>
+          )}
+          <button onClick={() => choose('delete')}>Remove memory</button>
+        </div>
+      )}
+    </details>
+  );
 }
-function group(n:Row){
-  if(n.validUntil && new Date(n.validUntil).getTime()<=Date.now())return 'Earlier memories';
-  if(n.topic.startsWith('person/'))return 'People';
-  if(n.topic.startsWith('project/'))return 'Projects';
-  return n.topic.includes('preference')?'Preferences':'Timeline';
+function group(n: Row) {
+  if (n.validUntil && new Date(n.validUntil).getTime() <= Date.now())
+    return 'Earlier memories';
+  if (n.topic.startsWith('person/')) return 'People';
+  if (n.topic.startsWith('project/')) return 'Projects';
+  return n.topic.includes('preference') ? 'Preferences' : 'Timeline';
 }
 export function Scroll({
   data,
   act,
   teach,
+  readings,
 }: {
   data: Row;
   act: Action;
   teach: () => void;
+  readings: () => void;
 }) {
   const [version, select] = useState(''),
     [past, setPast] = useState<Row[]>([]),
@@ -141,9 +193,24 @@ export function Scroll({
       {!version && data.notes?.length > 0 && (
         <section className="dated-notes">
           <h2>In your words</h2>
-          {['People','Projects','Preferences','Timeline','Earlier memories'].map(label=>{
-            const notes=data.notes.filter((n:Row)=>group(n)===label);
-            return notes.length>0 && <section key={label}><h3>{label}</h3>{notes.map((n:Row)=><DatedNote key={n.id} n={n} act={act}/>)}</section>;
+          {[
+            'People',
+            'Projects',
+            'Preferences',
+            'Timeline',
+            'Earlier memories',
+          ].map(label => {
+            const notes = data.notes.filter((n: Row) => group(n) === label);
+            return (
+              notes.length > 0 && (
+                <section key={label}>
+                  <h3>{label}</h3>
+                  {notes.map((n: Row) => (
+                    <DatedNote key={n.id} n={n} act={act} />
+                  ))}
+                </section>
+              )
+            );
           })}
         </section>
       )}
@@ -261,6 +328,16 @@ export function Scroll({
             </p>
           </div>
         )}
+      {!version && data.reading?.tested > 0 && (
+        <details>
+          <summary>How well Sumi guessed</summary>
+          <p>
+            Sumi hid {data.reading.tested} replies and compared its guesses with
+            your own words.
+          </p>
+          <button onClick={readings}>Read the predictions</button>
+        </details>
+      )}
       {!version && <Methods skills={data.skills} act={act} />}
     </Page>
   );

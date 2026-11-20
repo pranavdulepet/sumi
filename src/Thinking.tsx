@@ -84,12 +84,11 @@ export function Think({
         call('fit'),
       ]);
       const installed = models.filter(
-        m => !m.bytes || m.bytes * 2 + 4e9 < fit.memory,
+        m => !m.bytes || m.bytes * 1.3 + 3e9 < fit.memory,
       );
       const choice =
         installed.find(m => m.name === fit.recommendation?.name) ??
-        installed.find(m => m.name === 'llama3.2:3b') ??
-        installed[0];
+        installed.sort((a, b) => (b.bytes || 0) - (a.bytes || 0))[0];
       if (choice) {
         await act('model', choice);
         confirm('Ready to think on this Mac.');
@@ -267,7 +266,7 @@ export function ThinkingSettings({
       <button onClick={agents}>Connected agents</button>
       <button onClick={readings}>Review predictions</button>
       <Providers data={data} act={act} />
-      <NotebookData root={data.root}/>
+      <NotebookData root={data.root} />
       <section>
         <details>
           <summary>Sources and readings</summary>

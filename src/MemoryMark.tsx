@@ -14,6 +14,7 @@ export function MemoryMark({
   const [working, setWorking] = useState(false);
   const container = useRef<HTMLSpanElement>(null);
   const until = current?.validUntil;
+  const ended = until && new Date(until).getTime() <= Date.now();
   return (
     <span
       className="memory-mark"
@@ -45,9 +46,9 @@ export function MemoryMark({
           <span>{note.text}</span>
           <small>
             Since {day(note.validFrom)} {new Date(note.validFrom).getFullYear()}
-            {until ? ' · ended ' + day(until) : ''}
+            {until ? (ended ? ' · ended ' : ' · through ') + day(until) : ''}
           </small>
-          {current && !until && (
+          {current && !ended && (
             <button
               type="button"
               disabled={working}

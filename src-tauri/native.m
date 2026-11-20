@@ -9,7 +9,7 @@
 void sumi_background_thread(void) {
     pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0);
 }
-int sumi_heavy_allowed(void) {
+int sumi_quiet_power(double seconds) {
  @autoreleasepool {
    if ([NSProcessInfo processInfo].thermalState >= NSProcessInfoThermalStateSerious) return 0;
    CFTypeRef info=IOPSCopyPowerSourcesInfo();
@@ -17,9 +17,10 @@ int sumi_heavy_allowed(void) {
    CFStringRef power=IOPSGetProvidingPowerSourceType(info);
    BOOL onAC=power&&CFEqual(power,CFSTR(kIOPSACPowerValue));
    CFRelease(info);
-   return onAC && CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState,kCGAnyInputEventType)>90.;
+   return onAC && CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState,kCGAnyInputEventType)>seconds;
  }
 }
+int sumi_heavy_allowed(void) {return sumi_quiet_power(90.);}
 char *sumi_entities(const char *input) {
  @autoreleasepool {
   NSString *s=[NSString stringWithUTF8String:input];
@@ -152,5 +153,22 @@ int sumi_trash(const char *path) {
     @autoreleasepool {
         NSURL *url=[NSURL fileURLWithPath:[NSString stringWithUTF8String:path] isDirectory:YES];
         return [[NSFileManager defaultManager] trashItemAtURL:url resultingItemURL:nil error:nil] ? 1 : 0;
+    }
+}
+
+char *sumi_image_preview(const unsigned char *bytes,size_t length) {
+    @autoreleasepool {
+        NSData *input=[NSData dataWithBytes:bytes length:length];
+        CGImageSourceRef source=CGImageSourceCreateWithData((__bridge CFDataRef)input,NULL);
+        if(!source) return NULL;
+        NSDictionary *options=@{(__bridge NSString*)kCGImageSourceCreateThumbnailFromImageAlways:@YES,(__bridge NSString*)kCGImageSourceThumbnailMaxPixelSize:@900,(__bridge NSString*)kCGImageSourceCreateThumbnailWithTransform:@YES};
+        CGImageRef image=CGImageSourceCreateThumbnailAtIndex(source,0,(__bridge CFDictionaryRef)options);
+        CFRelease(source);
+        if(!image)return NULL;
+        NSBitmapImageRep *rep=[[NSBitmapImageRep alloc]initWithCGImage:image];
+        CGImageRelease(image);
+        NSData *data=[rep representationUsingType:NSBitmapImageFileTypeJPEG properties:@{NSImageCompressionFactor:@0.68}];
+        if(!data.length || data.length>450000)return NULL;
+        return strdup([[data base64EncodedStringWithOptions:0] UTF8String]);
     }
 }

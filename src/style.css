@@ -915,10 +915,47 @@ td {
   display: block;
 }
 
-.attachments, .process-diagram {display:flex;flex-wrap:wrap;align-items:center;gap:.65em}
-.attachments button,.import-offer button {font-size:.875em}
-.import-offer {border-top:1px solid var(--line);margin-top:2rem}
-.process-diagram {padding:0;list-style:none}
-.process-diagram li+li::before {content:'→';margin-right:.65em}
-.checklist {list-style:none;padding:0}
-.checklist input {margin-right:.65em}
+.attachments,
+.process-diagram {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65em;
+}
+.attachments button,
+.import-offer button {
+  font-size: 0.875em;
+}
+.import-offer {
+  border-top: 1px solid var(--line);
+  margin-top: 2rem;
+}
+.process-diagram {
+  padding: 0;
+  list-style: none;
+}
+.process-diagram li + li::before {
+  content: '→';
+  margin-right: 0.65em;
+}
+.checklist {
+  list-style: none;
+  padding: 0;
+}
+.checklist input {
+  margin-right: 0.65em;
+}
+.sheet-image {
+  margin-inline: 0;
+}
+.sheet-image img {
+  max-width: 100%;
+  height: auto;
+}
+.attachment-preview {
+  display: block;
+  max-width: min(100%, 22rem);
+  max-height: 16rem;
+  object-fit: contain;
+  margin-block: 0.6rem;
+}

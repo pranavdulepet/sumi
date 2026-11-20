@@ -29,7 +29,11 @@ pub fn export(s: &Store, dest: &Path) -> Res<()> {
         for folder in ["desk", "scroll"] {
             for entry in walkdir::WalkDir::new(s.root.join(folder)).follow_links(false) {
                 let e = entry.msg()?;
-                if !e.file_type().is_file() || e.path().extension().is_none_or(|v| v != "md") {
+                if !e.file_type().is_file()
+                    || (e.path().extension().is_none_or(|v| v != "md")
+                        && !(e.path().parent() == Some(s.root.join("desk/images").as_path())
+                            && e.path().extension().is_some_and(|v| v == "png")))
+                {
                     continue;
                 }
                 zip.start_file(
@@ -211,8 +215,39 @@ pub fn measures(s: &Store) -> Res<Value> {
             reused += 1
         }
     }
+    let checks = s.list("noteCheck")?;
     let notes = crate::memory::timeline(s)?;
     Ok(
-        json!({"weeks":weeks.into_values().collect::<Vec<_>>(),"eligibleSkills":eligible,"reusedSkills":reused,"validNotes":notes.iter().filter(|n|crate::memory::current(n)).count(),"notes":notes.len(),"dreamTrial":s.get("lastDreamTrial")?}),
+        json!({"weeks":weeks.into_values().collect::<Vec<_>>(),"memoryChecks":checks.len(),"confirmedNotes":checks.iter().filter(|c|c["result"]=="confirmed").count(),"eligibleSkills":eligible,"reusedSkills":reused,"validNotes":notes.iter().filter(|n|crate::memory::current(n)).count(),"notes":notes.len(),"dreamTrial":s.get("lastDreamTrial")?}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn export_contains_owned_files_and_excludes_secrets() {
+        let temp = tempfile::tempdir().unwrap();
+        let s = Store::with_key(temp.path().join("book"), &[1; 32]).unwrap();
+        crate::app::setup(&s).unwrap();
+        fs::write(s.root.join(".sumi/runtime.key"), "private material").unwrap();
+        fs::write(s.root.join("desk/test.md"), "My pencil sketch").unwrap();
+        std::os::unix::fs::symlink(
+            s.root.join(".sumi/runtime.key"),
+            s.root.join("desk/linked.md"),
+        )
+        .unwrap();
+        let dest = temp.path().join("my book.zip");
+        export(&s, &dest).unwrap();
+        let zip = zip::ZipArchive::new(fs::File::open(dest).unwrap()).unwrap();
+        assert!(zip.file_names().any(|f| f == "desk/test.md"));
+        assert!(!zip
+            .file_names()
+            .any(|f| f.contains("linked") || f.contains("runtime") || f.contains("key")));
+        assert!(export(&s, &s.root.join("book.zip")).is_err());
+        assert!(request_removal(&s, &json!({"confirm":"wrong"})).is_err());
+        assert!(!s.root.join(".sumi/trash-on-restart").exists());
+        request_removal(&s, &json!({"confirm":"Move notebook to Trash"})).unwrap();
+        assert!(s.root.join(".sumi/trash-on-restart").is_file());
+    }
 }

@@ -17,6 +17,7 @@ async function fixtureNotebook(
   agents = false,
   datedHistory?: {markdown: string; scores: object[]},
   existingFolder?: string,
+  event?: (message: any) => void,
 ) {
   const folder = existingFolder ?? (await mkdtemp(join(tmpdir(), 'sumi-ui-')));
   if (datedHistory) {
@@ -39,7 +40,14 @@ async function fixtureNotebook(
     {stdio: ['pipe', 'pipe', 'inherit']},
   );
   const pending: ((s: string) => void)[] = [];
-  createInterface({input: core.stdout}).on('line', s => pending.shift()?.(s));
+  createInterface({input: core.stdout}).on('line', s => {
+    const m = JSON.parse(s);
+    if (m.event) {
+      event?.(m);
+      return;
+    }
+    pending.shift()?.(s);
+  });
   let stopped = '';
   function stop(reason: string) {
     stopped = reason;
@@ -59,7 +67,9 @@ async function fixtureNotebook(
         if (result.error) reject(Error(result.error));
         else resolve(result.ok);
       });
-      core.stdin.write(JSON.stringify({operation: op, args}) + '\n');
+      core.stdin.write(
+        JSON.stringify({operation: op, args, stream: !!event}) + '\n',
+      );
     });
   }
   return {core, rpc, folder};
@@ -1175,14 +1185,14 @@ test('resume the publisher’s real GGUF download and seal a decision without an
     process.env.SUMI_TEST_MODEL_DOWNLOAD !== '1',
     'Requires the hardware-tier GGUF download.',
   );
-  test.setTimeout(420000);
+  test.setTimeout(1800000);
   page.setDefaultTimeout(15000);
   const first = await fixtureNotebook();
   const partial = join(
     first.folder,
     '.sumi',
     'models',
-    (await first.rpc('modelDownloadStatus')).file+'.partial',
+    (await first.rpc('modelDownloadStatus')).file + '.partial',
   );
   let writer: typeof first | undefined, reader: typeof first | undefined;
   const closed = (core: typeof first.core) =>
@@ -1219,7 +1229,12 @@ test('resume the publisher’s real GGUF download and seal a decision without an
         steps.push(progress.bytes);
         return progress;
       }
-      return writer!.rpc(op, args);
+      try {
+        return await writer!.rpc(op, args);
+      } catch (e) {
+        if (op === 'downloadBundled') console.error('Bundled download:', e);
+        throw e;
+      }
     });
     await page.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = {
@@ -1240,7 +1255,7 @@ test('resume the publisher’s real GGUF download and seal a decision without an
       page.getByRole('progressbar', {name: 'Local model download'}),
     ).toBeVisible();
     await expect(page.getByText('Ready to think on this Mac.')).toBeVisible({
-      timeout: 240000,
+      timeout: 1500000,
     });
     expect(steps).toContain(offset);
     expect(steps.some(n => n > offset)).toBeTruthy();
@@ -1662,6 +1677,129 @@ test('a weekend plan uses live sources and the current preference from another s
       'Source:',
       result.web.sources[result.web.pick].url,
     );
+  } finally {
+    core.stdin.end();
+  }
+});
+
+test('read a workshop schedule, follow up from the file, then correct a dated project memory', async ({
+  page,
+}, info) => {
+  let chunks = 0;
+  const {rpc, core} = await fixtureNotebook(false, undefined, undefined, m => {
+    chunks++;
+    void page
+      .evaluate(message => (window as any).sumiDelta?.(message.payload), m)
+      .catch(() => {});
+  });
+  try {
+    await rpc('model', {runtime: 'Ollama', name: 'llama3.2:3b'});
+    await rpc('mark', {
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    });
+    await rpc('finish');
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      const callbacks = new Map();
+      let serial = 0;
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: (fn: any) => {
+          callbacks.set(++serial, fn);
+          return serial;
+        },
+        unregisterCallback: (id: number) => callbacks.delete(id),
+        invoke: (cmd: string, p: any) => {
+          if (cmd === 'notebook')
+            return (window as any).sumiTestIPC(p.operation, p.args);
+          if (cmd === 'plugin:event|listen' && p.event === 'reply-delta')
+            (window as any).sumiDelta = (payload: any) =>
+              callbacks.get(p.handler)?.({
+                event: p.event,
+                payload,
+                id: p.handler,
+              });
+          return Promise.resolve(1);
+        },
+      };
+      (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+        unregisterListener: () => {},
+      };
+    });
+    await page.goto('/');
+    const field = page.getByLabel('Desk sheet');
+    await page.getByLabel('Choose attachments').setInputFiles({
+      name: 'studio-classes.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from(
+        'Workshop,Day,Start,Seats\nLinocut,Saturday,10 am,8\nBookbinding,Sunday,2 pm,6',
+      ),
+    });
+    await expect(
+      page.getByRole('button', {name: 'Remove studio-classes.csv'}),
+    ).toBeVisible();
+    await field.fill('Which workshop in my file is on Sunday?');
+    await field.press('Enter');
+    await expect(
+      page.locator('.exchange').last().locator('.reply'),
+    ).toContainText(/bookbinding/i, {timeout: 90000});
+    expect(chunks).toBeGreaterThan(1);
+    await page.getByRole('button', {name: 'Maybe later'}).click();
+    await field.fill('How many seats does that Sunday class have?');
+    await field.press('Enter');
+    await expect(page.locator('.exchange')).toHaveCount(2, {timeout: 90000});
+    await expect(
+      page.locator('.exchange').last().locator('.reply'),
+    ).toContainText(/6|six/i);
+    await page.screenshot({path: info.outputPath('workshop.png')});
+    await page.locator('.receipt summary').last().click();
+    await page.getByRole('button', {name: 'Try this answer again'}).click();
+    await expect(
+      page.getByRole('button', {name: 'Try this answer again'}),
+    ).toBeEnabled({timeout: 90000});
+    expect((await rpc('state')).chat.turns[1].regenerations).toBe(1);
+    await field.fill('I am working on the spring exhibition.');
+    await field.press('Enter');
+    await expect(page.locator('.exchange')).toHaveCount(3, {timeout: 90000});
+    await page.keyboard.press('Meta+k');
+    await page
+      .getByText('I am working on the spring exhibition', {exact: true})
+      .click();
+    await page.getByRole('button', {name: 'Edit memory'}).click();
+    await page
+      .getByLabel('Correct this memory')
+      .fill('I am working on the autumn exhibition.');
+    await page.getByRole('button', {name: 'Save correction'}).click();
+    await expect(
+      page.getByText('I am working on the autumn exhibition.', {exact: true}),
+    ).toBeVisible();
+    await page.reload();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    await page.keyboard.press('Meta+k');
+    await expect(
+      page.getByText('I am working on the autumn exhibition.', {exact: true}),
+    ).toBeVisible();
+    await page.keyboard.press('Meta+,');
+    await page.getByText('Your notebook', {exact: true}).click();
+    await page.getByRole('button', {name: 'Review local measures'}).click();
+    await expect(
+      page.getByRole('columnheader', {name: 'Rejected'}),
+    ).toBeVisible();
+    const download = await rpc('exportNotebook');
+    try {
+      expect(
+        execFileSync('unzip', ['-p', download, 'records/note.json'], {
+          encoding: 'utf8',
+        }),
+      ).toContain('autumn exhibition');
+      expect(
+        execFileSync('unzip', ['-Z1', download], {encoding: 'utf8'}),
+      ).not.toContain('.sumi/');
+    } finally {
+      await rm(download);
+    }
   } finally {
     core.stdin.end();
   }

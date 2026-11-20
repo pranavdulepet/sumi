@@ -221,6 +221,11 @@ fn choose_model(
         }
     }
 }
+pub fn publish(s: &Store, chat: &mut Value) -> Res<()> {
+    mirror(s, chat)?;
+    chat.as_object_mut().unwrap().remove("pendingFile");
+    s.put("chat", chat)
+}
 fn mirror(s: &Store, chat: &Value) -> Res<()> {
     let dir = s.root.join("desk/conversations");
     fs::create_dir_all(&dir).msg()?;
@@ -231,6 +236,12 @@ fn mirror(s: &Store, chat: &Value) -> Res<()> {
             turn["question"].as_str().unwrap_or(""),
             turn["reply"].as_str().unwrap_or("")
         ));
+        if let Some(image) = turn["image"].as_str() {
+            text.push_str(&format!(
+                "![Generated illustration](../images/{}.png)\n\n",
+                ident(image)?
+            ));
+        }
         for source in turn["web"]["sources"].as_array().into_iter().flatten() {
             text.push_str(&format!(
                 "- {} · {}\n",
@@ -482,18 +493,31 @@ fn retire_unused(s: &Store) -> Res<()> {
     if s.get("skillsReviewedOn")? == today {
         return Ok(());
     }
-    for skill in skills(s)? {
+    let mut seen = std::collections::HashSet::new();
+    let mut active = skills(s)?;
+    active.sort_by_cached_key(|v| {
+        std::cmp::Reverse(v["learned"]["at"].as_str().unwrap_or("").to_owned())
+    });
+    for skill in active {
         let Some(created) = skill["learned"]["at"].as_str().and_then(scroll::instant) else {
             continue;
         };
-        if (chrono::Utc::now() - created).num_days() < 60 {
+        let body = skill["body"]
+            .as_str()
+            .unwrap_or("")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let duplicate = !seen.insert((skill["private"] == true, body));
+        if !duplicate && (chrono::Utc::now() - created).num_days() < 60 {
             continue;
         }
         let id = ident(skill["id"].as_str().unwrap_or(""))?;
         let used:Option<String>=s.db.lock().unwrap().query_row("SELECT max(json_extract(t.value,'$.at')) FROM docs c JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND json_extract(t.value,'$.methodId')=?", [id],|r|r.get(0)).msg()?;
-        if (chrono::Utc::now() - used.as_deref().and_then(scroll::instant).unwrap_or(created))
-            .num_days()
-            >= 60
+        if duplicate
+            || (chrono::Utc::now() - used.as_deref().and_then(scroll::instant).unwrap_or(created))
+                .num_days()
+                >= 60
         {
             let dir = s.root.join("scroll/skills");
             let file = skill["file"].as_str().ok_or("Missing skill file.")?;
@@ -505,9 +529,18 @@ fn retire_unused(s: &Store) -> Res<()> {
     s.set("skillsReviewedOn", &json!(today))
 }
 // If a reflection is interrupted, the idle worker can finish it on this Mac.
-pub fn dream(s: &Store) -> Res<()> {
+pub fn dream(s: &Store, early: bool) -> Res<()> {
     let primary = s.get("model")?;
-    memory::dream_core(s, &primary, local::idle)?;
+    let quiet = || {
+        if early {
+            local::quiet_after_chat()
+        } else {
+            local::idle()
+        }
+    };
+    memory::audit_note(s, &primary, quiet)?;
+    memory::dream_transcript(s, &primary, quiet)?;
+    memory::dream_core(s, &primary, quiet)?;
     memory::dream_proposal(s, &primary)?;
     let Ok(_edit) = s.edit.try_lock() else {
         return Ok(());
@@ -599,6 +632,28 @@ pub fn private_request(q: &str) -> bool {
     .any(|t| lower.contains(t))
 }
 
+pub fn check_item(s: &Store, a: &Value) -> Res<Value> {
+    let _guard = s.edit.lock().unwrap();
+    let sheet = ident(a["sheet"].as_str().unwrap_or(""))?;
+    let key = ident(a["turn"].as_str().unwrap_or(""))?;
+    let item = a["item"]
+        .as_str()
+        .filter(|v| {
+            v.len() < 32
+                && v.split('-').count() == 3
+                && v.split('-').all(|n| n.parse::<u16>().is_ok())
+        })
+        .ok_or("Unknown checklist item.")?;
+    let value = a["value"].as_bool().ok_or("Missing selection.")?;
+    let mut chat = s.doc("chat", sheet)?;
+    let turn = chat["turns"]
+        .as_array_mut()
+        .and_then(|ts| ts.iter_mut().find(|v| v["id"] == key))
+        .ok_or("Missing checklist.")?;
+    turn["checks"][item] = json!(value);
+    s.put("chat", &chat)?;
+    Ok(Value::Null)
+}
 pub fn regenerate(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> {
     let _guard = s.edit.lock().unwrap();
     let sheet = ident(a["sheet"].as_str().unwrap_or(""))?;
@@ -659,6 +714,7 @@ pub fn regenerate(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value
         json!({"id":attempt,"at":now(),"request":q,"lane":old["lane"],"reason":"regeneration"});
     let last = chat["turns"].as_array_mut().unwrap().last_mut().unwrap();
     last["reply"] = json!(answer);
+    last["checks"] = Value::Null;
     last["notes"] = json!(notes);
     last["rules"] = json!([]);
     last["skill"] = Value::Null;
@@ -720,7 +776,18 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
     };
     let has_files = !files.is_empty();
     let primary = s.get("model")?;
-    let privacy_request = private_request(q)
+    let cues = words(q);
+    let uses_private_memory = plan::selected(&primary)
+        && memory::timeline(s)?.iter().any(|n| {
+            memory::current(n)
+                && n["restricted"] == true
+                && cues
+                    .intersection(&words(n["text"].as_str().unwrap_or("")))
+                    .count()
+                    >= 2
+        });
+    let privacy_request = uses_private_memory
+        || private_request(q)
         || (["imported chat", "past chat", "chat export"]
             .iter()
             .any(|term| q.to_lowercase().contains(term)))
@@ -738,7 +805,7 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
         || local::sensitive(q)
         || crate::sources::audit(q).is_none();
     let at = chrono::Local::now();
-    let restricted = privacy_request
+    let mut restricted = privacy_request
         || a["private"] == true
         || sheet_info["private"] == true
         || chat["networkClosed"] == true
@@ -770,6 +837,32 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
     } else {
         Some(primary.clone())
     };
+    // A one-message exception can disclose only the exact preview the person accepted.
+    // Mark the resulting turn private for all later retrieval, agents, and suggestions.
+    if local.is_none()
+        && plan::selected(&primary)
+        && local::sensitive(q)
+        && !privacy_request
+        && a["private"] != true
+        && sheet_info["private"] != true
+        && chat["private"] != true
+        && !has_files
+        && !forced.or(matched).is_some_and(|v| v["private"] == true)
+    {
+        if let Some(preview) = crate::sources::audit(q) {
+            if a["approvedQuestion"] != preview {
+                return Ok(json!({"reviewQuestion":preview}));
+            }
+            let answer = plan::one_question(s, &primary, &preview, sink)?;
+            chat["turns"].as_array_mut().unwrap().push(json!({"id":key,"at":at.to_rfc3339(),"question":q,"reply":answer,"lane":"deep","runtime":primary["runtime"],"model":primary["name"],"notes":[],"rules":[],"tools":[],"oneQuestion":true}));
+            chat["private"] = json!(true);
+            chat["networkClosed"] = json!(true);
+            chat["pendingFile"] = json!(true);
+            s.put("chat", &chat)?;
+            finish_turn(s, &mut chat, sheet, q)?;
+            return Ok(Value::Null);
+        }
+    }
     let selector = if private {
         local
             .as_ref()
@@ -805,12 +898,39 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
         .filter(|skill| related(q, skill));
     let skill = forced.or(matched).or(named);
     private |= skill.is_some_and(|v| v["private"] == true);
+    restricted |= skill.is_some_and(|v| v["private"] == true) && plan::selected(&primary);
     let corrected = s.list("routeCorrection")?.iter().take(64).any(|v| {
         let prior = words(v["request"].as_str().unwrap_or(""));
         let overlap = prior.intersection(&terms).count();
         overlap >= 2 && overlap * 2 >= prior.len().min(terms.len()) && v["lane"] == "quick"
     });
-    let visual = has_files
+    let lower = q.to_lowercase();
+    let image_request = !has_files
+        && [
+            "generate an image",
+            "make an image",
+            "draw me ",
+            "paint me ",
+            "create an image",
+            "generate a picture",
+            "create a picture",
+            "illustrate ",
+        ]
+        .iter()
+        .any(|cue| lower.starts_with(cue));
+    let drawable = image_request
+        && !restricted
+        && s.optional_doc("provider", "OpenRouter")?.is_some_and(|p| {
+            p["imageModel"].as_str().is_some_and(|v| !v.is_empty())
+                && p["cap"].as_u64().unwrap_or(0) > 0
+        });
+    let image_prompt = if drawable {
+        crate::sources::audit(q)
+    } else {
+        None
+    };
+    let visual = image_request
+        || has_files
         || [
             "draw a diagram",
             "as a diagram",
@@ -833,7 +953,7 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
             }
         }
     }
-    let web = if has_files {
+    let web = if has_files || image_request {
         None
     } else {
         web_search::prepare(q, last, &routing, &notes, at.date_naive(), restricted)
@@ -888,7 +1008,7 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
     let mut history:Vec<_>=turns.iter().rev().take(6).map(|v|json!({"user":v["question"].as_str().unwrap_or("").chars().take(850).collect::<String>(),"assistant":v["reply"].as_str().unwrap_or("").chars().take(1200).collect::<String>()})).collect();
     history.reverse();
     let note_context:Vec<_>=notes.iter().enumerate().map(|(i,n)|json!({"number":i+1,"text":n["text"],"anchored_dates":n["dates"],"since":n["validFrom"]})).collect();
-    let payload = json!({"attached_documents":crate::attachments::context(&files,q),"dated_notes":note_context,"local_time":at.to_rfc3339(),"tool_results":tools,"conversation":history,"approved_preferences":rules,"chosen_method":skill.map(|v|v["body"].clone()),"current_request":q});
+    let payload = json!({"photo_inputs":crate::attachments::photos(&files)?,"attached_documents":crate::attachments::context(&files,q),"dated_notes":note_context,"local_time":at.to_rfc3339(),"tool_results":tools,"conversation":history,"approved_preferences":rules,"chosen_method":skill.map(|v|v["body"].clone()),"current_request":q});
     let optional = if !private && !quick && !has_files && plan::selected(&model) {
         s.optional_doc("provider", "OpenRouter")?
             .filter(|p| p["conversation"] == true && p["cap"].as_u64().unwrap_or(0) > 0)
@@ -896,7 +1016,15 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
         None
     };
     let mut responder = model.clone();
-    let answer = if let Some(w) = &web {
+    let answer = if image_request {
+        if image_prompt.is_some() {
+            "Ready to draw this.".to_owned()
+        } else if restricted {
+            "Image generation needs an online sheet.".to_owned()
+        } else {
+            "Connect an image model in Settings to draw this.".to_owned()
+        }
+    } else if let Some(w) = &web {
         web_search::introduction(w).to_owned()
     } else if let Some(name) = recalled_name(q, turns, recall) {
         name
@@ -980,8 +1108,9 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
             reflection = Some(job);
         }
     }
-    let mut turn = json!({"lane":if visual {"visual"} else if private {"private"} else if quick {"quick"} else {"deep"},"notes":notes,"web":web,"id":key,"at":at.to_rfc3339(),"question":q,"reply":answer,"model":responder["name"],"runtime":responder["runtime"],"rules":rules,"skill":skill.map(|v|v["title"].clone()),"tools":tools,"timeline":timeline,"worksheet":worksheet,"selector":selector["name"],"selectorRuntime":selector["runtime"],"methodId":skill.map(|v|v["id"].clone())});
+    let mut turn = json!({"lane":if visual {"visual"} else if private {"private"} else if quick {"quick"} else {"deep"},"notes":notes,"web":web,"id":key,"at":at.to_rfc3339(),"question":q,"reply":answer,"model":responder["name"],"runtime":responder["runtime"],"rules":rules,"skill":skill.map(|v|v["title"].clone()),"tools":tools,"timeline":timeline,"worksheet":worksheet,"selector":if routing["selector"]=="built-in"{Value::Null}else{selector["name"].clone()},"selectorRuntime":selector["runtime"],"methodId":skill.map(|v|v["id"].clone())});
     turn["files"] = json!(added);
+    turn["imagePrompt"] = json!(image_prompt);
     if turn["web"]["status"] == "ready"
         && turn["web"]["outing"] == true
         && s.get("autoListings")? == true
@@ -1004,6 +1133,9 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
     chat["private"] = json!(private);
     chat["pendingFile"] = json!(true);
     s.put("chat", &chat)?;
+    if chat["turns"].as_array().is_some_and(|t| t.len() % 10 == 0) {
+        s.set("longConversationDream", &json!(key))?;
+    }
     if s.get("importOffer")?.is_null() && s.list("source")?.is_empty() {
         s.set("importOffer", &json!(sheet))?;
     }
@@ -1110,7 +1242,7 @@ mod tests {
         drop(s);
         let s = Store::with_key(tmp.path().to_owned(), &[42; 32]).unwrap();
         crate::app::setup(&s).unwrap();
-        dream(&s).unwrap();
+        dream(&s, false).unwrap();
         let learned = skills(&s).unwrap();
         assert_eq!(learned.len(), 1);
         assert!(!learned[0]["title"].as_str().unwrap().is_empty());

@@ -179,3 +179,49 @@ pub fn consume_chat(
         Err("The model stopped before finishing. Try again.".into())
     }
 }
+
+#[cfg(test)]
+mod streaming {
+    use super::*;
+    #[test]
+    fn both_local_protocols_deliver_fragments_and_reject_disconnects() {
+        for (ollama,body,end) in [
+            (true,"{\"message\":{\"content\":\"One\"},\"done\":false}\n{\"message\":{\"content\":\" two\"},\"done\":false}\n","{\"done\":true}\n"),
+            (false,"data: {\"choices\":[{\"delta\":{\"content\":\"One\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" two\"}}]}\n\n","data: [DONE]\n\n")
+        ]{
+            let mut pieces=vec![];
+            assert!(consume_chat(body.as_bytes(),ollama,40,&mut |_|{}).is_err());
+            assert_eq!(consume_chat(format!("{body}{end}").as_bytes(),ollama,40,&mut |d|pieces.push(d.to_owned())).unwrap(),"One two");
+            assert_eq!(pieces,["One"," two"]);
+        }
+    }
+}
+
+pub fn vision(model: &Value) -> bool {
+    agent(3)
+        .post(&format!("{OLLAMA}/api/show"))
+        .send_json(json!({"model":model["name"]}))
+        .ok()
+        .and_then(|r| r.into_json::<Value>().ok())
+        .is_some_and(|v| {
+            v["capabilities"]
+                .as_array()
+                .is_some_and(|c| c.contains(&json!("vision")))
+        })
+}
+pub fn photo_reply(
+    model: &Value,
+    system: &str,
+    input: &Value,
+    limit: u32,
+    photos: &[Value],
+    sink: Option<&mut dyn FnMut(&str)>,
+) -> Res<String> {
+    let response=agent(120).post(&format!("{OLLAMA}/api/chat")).send_json(json!({"model":model["name"],"stream":true,"think":false,"options":{"temperature":0,"num_predict":limit},"messages":[{"role":"system","content":system},{"role":"user","content":input.to_string(),"images":photos}]})).msg()?;
+    consume_chat(
+        response.into_reader(),
+        true,
+        limit,
+        sink.unwrap_or(&mut |_| {}),
+    )
+}

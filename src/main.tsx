@@ -275,7 +275,12 @@ function Notebook() {
                 }
               />
             ) : place === 'Scroll' ? (
-              <Scroll data={data} act={act} teach={() => teach(true)} />
+              <Scroll
+                data={data}
+                act={act}
+                readings={() => navigate('Mirror')}
+                teach={() => teach(true)}
+              />
             ) : place === 'Mirror' ? (
               <Mirror data={data} act={act} />
             ) : (

@@ -1,5 +1,5 @@
 import {chart} from './Chart';
-import {Fragment, type ReactNode} from 'react';
+import {Fragment, useState, type ReactNode} from 'react';
 
 // Render the text forms a notebook uses. All model output stays in React text nodes.
 function rich(text: string, mark?: (index: number) => ReactNode) {
@@ -22,10 +22,17 @@ function rich(text: string, mark?: (index: number) => ReactNode) {
 export function Reply({
   text,
   mark,
+  checklist,
+  checks,
+  onCheck,
 }: {
   text: string;
   mark?: (index: number) => ReactNode;
+  checklist?: boolean;
+  checks?: Record<string, boolean>;
+  onCheck?: (item: string, value: boolean) => Promise<void>;
 }) {
+  const [pending, stage] = useState<Record<string, boolean>>({});
   const inline = (value: string) => rich(value, mark);
   const blocks = text.split(/(```[^\n]*\n[\s\S]*?(?:```|$))/g);
   return (
@@ -34,9 +41,27 @@ export function Reply({
         const visual = chart(block);
         if (visual) return <Fragment key={i}>{visual}</Fragment>;
         if (block.startsWith('```diagram\n')) {
-          const items=block.replace(/^```diagram\n/,'').replace(/```$/,'').trim().split(/\s*(?:->|→)\s*/);
-          if(items.length>=2 && items.length<=10 && items.every(t=>t.length>0 && t.length<=100))
-            return <ol className="process-diagram" key={i} aria-label="Process diagram">{items.map((t,k)=><li key={k}>{inline(t)}</li>)}</ol>;
+          const items = block
+            .replace(/^```diagram\n/, '')
+            .replace(/```$/, '')
+            .trim()
+            .split(/\s*(?:->|→)\s*/);
+          if (
+            items.length >= 2 &&
+            items.length <= 10 &&
+            items.every(t => t.length > 0 && t.length <= 100)
+          )
+            return (
+              <ol
+                className="process-diagram"
+                key={i}
+                aria-label="Process diagram"
+              >
+                {items.map((t, k) => (
+                  <li key={k}>{inline(t)}</li>
+                ))}
+              </ol>
+            );
         }
         if (block.startsWith('```'))
           return (
@@ -90,8 +115,52 @@ export function Reply({
                   </div>
                 );
             }
-            if(lines.every(line=>/^\s*[-*] \[[ xX]\] /.test(line)))
-              return <ul className="checklist" key={key} aria-label="Checklist">{lines.map((line,k)=><li key={k}><label><input type="checkbox" defaultChecked={/\[[xX]\]/.test(line)}/>{inline(line.replace(/^\s*[-*] \[[ xX]\] /,''))}</label></li>)}</ul>;
+            if (
+              lines.every(line =>
+                /^\s*(?:[-*] |\d+[.)] )?\[[ xX]\] /.test(line),
+              ) ||
+              (checklist &&
+                lines.every(line => /^\s*(?:[-*] |\d+[.)] )/.test(line)))
+            )
+              return (
+                <ul className="checklist" key={key} aria-label="Checklist">
+                  {lines.map((line, k) => {
+                    const item = key + '-' + k;
+                    const value =
+                      pending[item] ?? checks?.[item] ?? /\[[xX]\]/.test(line);
+                    return (
+                      <li key={k}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={value}
+                            disabled={!onCheck || item in pending}
+                            onChange={async e => {
+                              const value = e.target.checked;
+                              stage(v => ({...v, [item]: value}));
+                              try {
+                                await onCheck?.(item, value);
+                              } finally {
+                                stage(v => {
+                                  const copy = {...v};
+                                  delete copy[item];
+                                  return copy;
+                                });
+                              }
+                            }}
+                          />
+                          {inline(
+                            line.replace(
+                              /^\s*(?:[-*] |\d+[.)] )?(?:\[[ xX]\] )?/,
+                              '',
+                            ),
+                          )}
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+              );
             if (lines.every(line => /^\s*[-*] /.test(line)))
               return (
                 <ul key={key}>

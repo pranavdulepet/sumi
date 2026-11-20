@@ -1,6 +1,6 @@
 use crate::store::*;
+use ring::digest::{Context, SHA256};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
@@ -48,8 +48,16 @@ const TIERS: [Tier; 3] = [
     },
 ];
 fn tier(s: &Store) -> &'static Tier {
-    let ram = crate::local::fit(s)["memory"].as_u64().unwrap_or(0) / 1_073_741_824;
-    TIERS.iter().find(|v| v.ram <= ram).unwrap_or(&TIERS[2])
+    let fit = crate::local::fit(s);
+    let ram = fit["memory"].as_u64().unwrap_or(0) / 1_073_741_824;
+    let free = fit["freeDisk"].as_u64().unwrap_or(0);
+    TIERS
+        .iter()
+        .find(|t| {
+            let file = spec(s, t, "");
+            t.ram <= ram && (file.dest.is_file() || free >= t.size - file.saved() + RESERVE)
+        })
+        .unwrap_or(&TIERS[2])
 }
 const RESERVE: u64 = 3_000_000_000;
 
@@ -79,9 +87,16 @@ impl Download<'_> {
         if file.metadata().msg()?.len() != self.size {
             return Ok(false);
         }
-        let mut hash = Sha256::new();
-        std::io::copy(&mut file, &mut hash).msg()?;
-        Ok(hex::encode(hash.finalize()) == self.sha)
+        let mut digest = Context::new(&SHA256);
+        let mut buffer = vec![0; 1024 * 1024];
+        loop {
+            let bytes = file.read(&mut buffer).msg()?;
+            if bytes == 0 {
+                break;
+            }
+            digest.update(&buffer[..bytes]);
+        }
+        Ok(hex::encode(digest.finish().as_ref()) == self.sha)
     }
     fn acquire(&self, free: u64) -> Res<()> {
         let dir = self.dest.parent().ok_or("Missing model directory.")?;

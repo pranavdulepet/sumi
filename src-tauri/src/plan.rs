@@ -76,8 +76,21 @@ pub fn think_with(
     schema: Option<&Value>,
     sink: Option<&mut dyn FnMut(&str)>,
 ) -> Res<String> {
+    let mut fields = input.clone();
+    let photos = fields
+        .as_object_mut()
+        .and_then(|f| f.remove("photo_inputs"))
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    if !selected(model)
+        && !photos.is_empty()
+        && model["runtime"] == "Ollama"
+        && crate::models::vision(model)
+    {
+        return crate::models::photo_reply(model, system, &fields, limit, &photos, sink);
+    }
     if !selected(model) {
-        return crate::models::infer_reply(model, system, &input.to_string(), limit, schema, sink);
+        return crate::models::infer_reply(model, system, &fields.to_string(), limit, schema, sink);
     }
     let connected = s.get("model")?;
     if connected != *model
@@ -87,7 +100,7 @@ pub fn think_with(
     {
         return Err("The notebook's thinking setting changed. Try again.".into());
     }
-    let input = clean(input)?;
+    let input = clean(&fields)?;
     let name = model["name"].as_str().ok_or("Connect ChatGPT again.")?;
     let (api, token) = session(s)?;
     reserve(s)?;
@@ -100,11 +113,39 @@ pub fn think_with(
         limit,
         schema,
         sink,
+        &photos,
     )?;
     s.put(
         "route",
         &json!({"id":id(),"date":now(),"job":job,"provider":"ChatGPT","model":name,"items":1}),
     )?;
+    Ok(answer)
+}
+
+pub fn one_question(
+    s: &Store,
+    model: &Value,
+    preview: &str,
+    sink: &mut dyn FnMut(&str),
+) -> Res<String> {
+    if !selected(model) || s.get("model")? != *model {
+        return Err("The connected plan changed.".into());
+    }
+    let (api, token) = session(s)?;
+    reserve(s)?;
+    let name = model["name"].as_str().ok_or("Connect ChatGPT again.")?;
+    let answer = complete_with(
+        &api,
+        &token,
+        name,
+        "Answer the one question directly. You have no notebook context.",
+        preview,
+        650,
+        None,
+        Some(sink),
+        &[],
+    )?;
+    s.put("route",&json!({"id":id(),"date":now(),"job":"one approved question","provider":"ChatGPT","model":name,"items":1}))?;
     Ok(answer)
 }
 
@@ -186,7 +227,7 @@ pub(crate) fn complete(
     limit: u32,
     schema: Option<&Value>,
 ) -> Res<String> {
-    complete_with(api, token, model, system, input, limit, schema, None)
+    complete_with(api, token, model, system, input, limit, schema, None, &[])
 }
 pub(crate) fn complete_with(
     api: &str,
@@ -197,11 +238,21 @@ pub(crate) fn complete_with(
     limit: u32,
     schema: Option<&Value>,
     sink: Option<&mut dyn FnMut(&str)>,
+    photos: &[Value],
 ) -> Res<String> {
     // Plan usage rejects max_output_tokens. Give the model a length instruction
     // and independently bound the output our client accepts.
     let mut body = json!({"model":model,"instructions":format!("{system}\nKeep your answer within {limit} tokens."),
         "input":[{"role":"user","content":input}],"stream":true,"store":false});
+    if !photos.is_empty() {
+        let mut parts = vec![json!({"type":"input_text","text":input})];
+        for photo in photos.iter().filter_map(Value::as_str) {
+            parts.push(
+                json!({"type":"input_image","image_url":format!("data:image/jpeg;base64,{photo}")}),
+            );
+        }
+        body["input"][0]["content"] = json!(parts);
+    }
     if let Some(schema) = schema {
         body["text"] =
             json!({"format":{"type":"json_schema","name":"result","schema":schema,"strict":true}});

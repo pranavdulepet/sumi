@@ -263,7 +263,20 @@ fn fixture_rpc(root: std::path::PathBuf, agents: bool) -> Res<()> {
         if op == "state" {
             arrival.check(&s, &downloads)?;
         }
-        let result = if op == "exportLink" {
+        let result = if op == "askSheet" && req["stream"] == true {
+            conversation::ask_with(&s, &req["args"], &mut |delta| {
+                let _ = writeln!(
+                    std::io::stdout(),
+                    "{}",
+                    serde_json::json!({"event":"reply-delta","payload":{"turn":req["args"]["turn"],"delta":delta}})
+                );
+            })
+        } else if op == "exportNotebook" {
+            let dest = std::env::temp_dir().join(format!("sumi-export-{}.zip", crate::store::id()));
+            crate::notebook_data::export(&s, &dest).map(|()| serde_json::json!(dest))
+        } else if op == "trashNotebook" {
+            Err("Fixture notebooks cannot operate on the Mac Trash.".into())
+        } else if op == "exportLink" {
             exports::request(&s)
         } else if op == "exports" {
             exports::find(&s, &downloads)

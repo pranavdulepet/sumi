@@ -54,11 +54,25 @@ pub fn start(s: Arc<Store>) {
             for _ in rx.try_iter() {
                 dirty = true
             }
-            if !local::idle() || s.reading.load(Ordering::SeqCst) {
+            if s.reading.load(Ordering::SeqCst) {
                 continue;
             }
-            if let Err(e) = crate::conversation::dream(&s) {
-                let _ = s.set("backgroundIssue", &json!(e));
+            let queued = s.get("longConversationDream").unwrap_or_default();
+            let early = queued.is_string() && local::quiet_after_chat();
+            if !local::idle() && !early {
+                continue;
+            }
+            match crate::conversation::dream(&s, early) {
+                Ok(()) if early && s.get("longConversationDream").ok() == Some(queued) => {
+                    let _ = s.set("longConversationDream", &Value::Null);
+                }
+                Err(e) => {
+                    let _ = s.set("backgroundIssue", &json!(e));
+                }
+                _ => (),
+            }
+            if !local::idle() {
+                continue;
             }
             if crate::catalog::configured()
                 && s.get("catalogOff").ok() != Some(json!(true))
@@ -111,7 +125,12 @@ pub fn tune(s: &Store) -> Res<()> {
     };
     s.set("ghostRepeat", &json!(min_repeat))?;
     let moments = sources::moments(s, "tune", 12)?;
-    let m = s.get("model")?;
+    let primary = s.get("model")?;
+    let m = if plan::selected(&primary) {
+        crate::conversation::local_model(s).unwrap_or(primary)
+    } else {
+        primary
+    };
     if moments.len() < 4 || m.is_null() {
         s.set("lastTune", &json!(now()))?;
         return Ok(());
