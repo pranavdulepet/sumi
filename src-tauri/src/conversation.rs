@@ -26,7 +26,12 @@ pub(crate) fn words(text: &str) -> HashSet<String> {
 }
 
 pub fn skills(s: &Store) -> Res<Vec<Value>> {
-    let dir = s.root.join("scroll/skills");
+    skills_in(&s.root.join("scroll/skills"))
+}
+pub(crate) fn retired_skills(s: &Store) -> Res<Vec<Value>> {
+    skills_in(&s.root.join("scroll/skills/retired"))
+}
+fn skills_in(dir: &std::path::Path) -> Res<Vec<Value>> {
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -99,15 +104,27 @@ pub fn save_skill(s: &Store, a: &Value) -> Res<Value> {
     let id = ident(a["id"].as_str().unwrap_or(""))?;
     let dir = s.root.join("scroll/skills");
     fs::create_dir_all(&dir).msg()?;
-    let metadata = if a["learned"].is_object() {
+    let previous = skills(s)?.into_iter().find(|v| v["id"] == id);
+    let previous_learning = previous.as_ref().map(|v| &v["learned"]);
+    let mut learned = a
+        .get("learned")
+        .filter(|v| v.is_object())
+        .or(previous_learning)
+        .cloned()
+        .unwrap_or(Value::Null);
+    let metadata = if learned.is_object() {
+        // Older skill files record the last known learning date as `at`.
+        learned["createdAt"] = previous_learning
+            .and_then(|v| v.get("createdAt").or(v.get("at")))
+            .cloned()
+            .unwrap_or_else(|| learned["at"].clone());
         format!(
             "<!-- sumi-method {} -->\n",
-            a["learned"].to_string().replace("-->", "--\\u003e")
+            learned.to_string().replace("-->", "--\\u003e")
         )
     } else {
         String::new()
     };
-    let previous = skills(s)?.into_iter().find(|v| v["id"] == id);
     let slug = title
         .to_ascii_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric())

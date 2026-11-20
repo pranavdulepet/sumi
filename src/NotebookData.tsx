@@ -1,11 +1,19 @@
 import {useState} from 'react';
 import {call, type Row} from './api';
+const percent = new Intl.NumberFormat(undefined, {style: 'percent', maximumFractionDigits: 1});
+
 export function NotebookData({root}: {root: string}) {
   const [confirm, setConfirm] = useState(false),
     [text, write] = useState(''),
     [status, note] = useState(''),
     [working, busy] = useState(false),
     [metrics, show] = useState<Row | null>(null);
+  const [through, setThrough] = useState('');
+  async function readMeasures(day?: string) {
+    const result = await call('notebookMeasures', day ? {day} : {});
+    show(result);
+    setThrough(result.through);
+  }
   async function run(work: () => Promise<void>) {
     busy(true);
     note('');
@@ -33,13 +41,37 @@ export function NotebookData({root}: {root: string}) {
         Export a readable copy
       </button>
       <button
-        onClick={() => run(async () => show(await call('notebookMeasures')))}
+        disabled={working}
+        onClick={() => run(() => readMeasures(through || undefined))}
       >
         Review local measures
       </button>
       {metrics && (
         <div>
+          <form
+            onSubmit={e => {
+              e.preventDefault();
+              void run(() => readMeasures(through));
+            }}
+          >
+            <label>
+              Two weeks ending{' '}
+              <input
+                type="date"
+                value={through}
+                max={metrics.today}
+                required
+                onChange={e => setThrough(e.target.value)}
+              />
+            </label>{' '}
+            <button
+              disabled={working || !through || through === metrics.through}
+            >
+              Apply
+            </button>
+          </form>
           <table>
+            <caption>Seven-day periods through {metrics.through}</caption>
             <thead>
               <tr>
                 <th>Week starting</th>
@@ -56,7 +88,11 @@ export function NotebookData({root}: {root: string}) {
                   <td>{w.week}</td>
                   <td>{w.days.length}</td>
                   <td>{w.turns}</td>
-                  <td>{w.clarifications}</td>
+                  <td>
+                    {w.turns
+                      ? `${w.clarifications} of ${w.turns} (${percent.format(w.clarifications / w.turns)})`
+                      : 'No replies'}
+                  </td>
                   <td>{w.rejections}</td>
                   <td>{w.deep}</td>
                 </tr>
@@ -65,14 +101,16 @@ export function NotebookData({root}: {root: string}) {
           </table>
           <small>
             ¹ Follow-ups beginning with a clarification such as “I meant.”
-            Rejected replies count corrections and regenerations.
+            Rejected counts corrections and regenerations made during each
+            period.
           </small>
+          <p className="small">Across this notebook</p>
           <p>
             {metrics.eligibleSkills
               ? metrics.reusedSkills +
                 ' of ' +
                 metrics.eligibleSkills +
-                ' active skills were reused in their first month.'
+                ' learned skills were reused in their first month.'
               : 'Skills need a month of history to measure reuse.'}
           </p>
           <p>

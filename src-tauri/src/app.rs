@@ -108,7 +108,7 @@ pub fn state(s: &Store) -> Res<Value> {
 pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
     match op {
         "state" => state(s),
-        "notebookMeasures" => crate::notebook_data::measures(s),
+        "notebookMeasures" => crate::notebook_data::measures(s, desk_day(a)?),
         "exportNotebook" => {
             if let Some(path) = rfd::FileDialog::new()
                 .set_file_name("Sumi notebook.zip")

@@ -1813,6 +1813,16 @@ test('read a workshop schedule, follow up from the file, then correct a dated pr
     await expect(
       page.getByRole('columnheader', {name: 'Rejected'}),
     ).toBeVisible();
+    const currentReport = page.getByRole('table', {name: /Seven-day periods through/});
+    await expect(currentReport.getByRole('row').last()).toContainText(/of [1-9]\d* \(\d+(?:[.,]\d+)?%\)/);
+    await currentReport.screenshot({path: info.outputPath('two-weeks.png')});
+    await page.getByLabel('Two weeks ending').fill('2024-03-12');
+    await page.getByRole('button', {name: 'Apply', exact: true}).click();
+    const report = page.getByRole('table', {name: 'Seven-day periods through 2024-03-12'});
+    await expect(report.getByRole('row')).toHaveCount(3);
+    await expect(report.getByRole('cell', {name: '2024-02-28'})).toBeVisible();
+    await expect(report.getByRole('cell', {name: '2024-03-06'})).toBeVisible();
+    await expect(report.getByRole('cell', {name: 'No replies'})).toHaveCount(2);
     const download = await rpc('exportNotebook');
     try {
       expect(

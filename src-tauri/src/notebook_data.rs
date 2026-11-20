@@ -1,5 +1,5 @@
 use crate::store::*;
-use chrono::{Datelike, Duration, Local};
+use chrono::{Days, Duration, Local, NaiveDate};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, ffi::CString, fs, io::Write, path::Path};
 
@@ -116,9 +116,20 @@ pub fn finish_removal(root: &Path) -> Res<()> {
     Ok(())
 }
 
-pub fn measures(s: &Store) -> Res<Value> {
+pub fn measures(s: &Store, through: NaiveDate) -> Res<Value> {
     let today = Local::now().date_naive();
-    let monday = today - Duration::days(today.weekday().num_days_from_monday().into());
+    if through > today {
+        return Err("Choose today or an earlier date.".into());
+    }
+    let first = through
+        .checked_sub_days(Days::new(13))
+        .ok_or("Invalid end date.")?;
+    let second = first + Duration::days(7);
+    let week_of = |day| match day {
+        d if d >= first && d < second => Some(first),
+        d if d >= second && d <= through => Some(second),
+        _ => None,
+    };
     let mut weeks = BTreeMap::new();
     let mut uses = BTreeMap::<String, Vec<chrono::DateTime<chrono::Utc>>>::new();
     let local_day = |v: &Value| {
@@ -126,10 +137,10 @@ pub fn measures(s: &Store) -> Res<Value> {
             .and_then(crate::scroll::instant)
             .map(|d| d.with_timezone(&Local).date_naive())
     };
-    for start in [monday - Duration::weeks(1), monday] {
+    for start in [first, second] {
         weeks.insert(
             start,
-            json!({"week":start,"turns":0,"clarifications":0,"deep":0,"rejections":0,"days":[]}),
+            json!({"week":start,"until":start + Duration::days(6),"turns":0,"clarifications":0,"deep":0,"rejections":0,"days":[]}),
         );
     }
     for chat in s.list("chat")? {
@@ -143,9 +154,7 @@ pub fn measures(s: &Store) -> Res<Value> {
             let Some(day) = local_day(&t["at"]) else {
                 continue;
             };
-            let Some(row) =
-                weeks.get_mut(&(day - Duration::days(day.weekday().num_days_from_monday().into())))
-            else {
+            let Some(row) = week_of(day).and_then(|start| weeks.get_mut(&start)) else {
                 continue;
             };
             for (key, amount) in [
@@ -184,18 +193,24 @@ pub fn measures(s: &Store) -> Res<Value> {
     }
     for r in s.list("routeCorrection")? {
         if let Some(day) = local_day(&r["at"]) {
-            if let Some(row) =
-                weeks.get_mut(&(day - Duration::days(day.weekday().num_days_from_monday().into())))
-            {
+            if let Some(row) = week_of(day).and_then(|start| weeks.get_mut(&start)) {
                 row["rejections"] = json!(row["rejections"].as_u64().unwrap_or(0) + 1);
             }
         }
     }
     let mut eligible = 0;
     let mut reused = 0;
-    for skill in crate::conversation::skills(s)? {
-        let Some(created) = skill["learned"]["at"]
-            .as_str()
+    let mut skills = crate::conversation::skills(s)?;
+    skills.extend(crate::conversation::retired_skills(s)?);
+    let mut counted = std::collections::HashSet::new();
+    for skill in skills {
+        if !counted.insert(skill["id"].as_str().unwrap_or("").to_owned()) {
+            continue;
+        }
+        let Some(created) = skill["learned"]
+            .get("createdAt")
+            .or(skill["learned"].get("at"))
+            .and_then(Value::as_str)
             .and_then(crate::scroll::instant)
         else {
             continue;
@@ -218,13 +233,95 @@ pub fn measures(s: &Store) -> Res<Value> {
     let checks = s.list("noteCheck")?;
     let notes = crate::memory::timeline(s)?;
     Ok(
-        json!({"weeks":weeks.into_values().collect::<Vec<_>>(),"memoryChecks":checks.len(),"confirmedNotes":checks.iter().filter(|c|c["result"]=="confirmed").count(),"eligibleSkills":eligible,"reusedSkills":reused,"validNotes":notes.iter().filter(|n|crate::memory::current(n)).count(),"notes":notes.len(),"dreamTrial":s.get("lastDreamTrial")?}),
+        json!({"through":through,"today":today,"weeks":weeks.into_values().collect::<Vec<_>>(),"memoryChecks":checks.len(),"confirmedNotes":checks.iter().filter(|c|c["result"]=="confirmed").count(),"eligibleSkills":eligible,"reusedSkills":reused,"validNotes":notes.iter().filter(|n|crate::memory::current(n)).count(),"notes":notes.len(),"dreamTrial":s.get("lastDreamTrial")?}),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fortnight_uses_local_dates_and_includes_both_complete_seven_day_windows() {
+        use chrono::TimeZone;
+        let temp = tempfile::tempdir().unwrap();
+        let s = Store::with_key(temp.path().to_owned(), &[24; 32]).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 3, 12).unwrap();
+        let stamp = |offset| {
+            Local
+                .from_local_datetime(
+                    &(end + Duration::days(offset))
+                        .and_hms_opt(0, 15, 0)
+                        .unwrap(),
+                )
+                .single()
+                .unwrap()
+                .to_utc()
+                .to_rfc3339()
+        };
+        let turns: Vec<_> = [
+            (-14, "Old question"),
+            (-13, "First day"),
+            (-13, "I meant Saturday"),
+            (-7, "End of week one"),
+            (-6, "Start of week two"),
+            (0, "Last day"),
+            (1, "Later question"),
+        ]
+        .into_iter()
+        .map(|(offset, question)| json!({"at":stamp(offset),"question":question,"lane":"deep"}))
+        .collect();
+        s.put("chat", &json!({"id":id(),"turns":turns})).unwrap();
+        for offset in [-14, -13, -6, 0, 1] {
+            s.put("routeCorrection", &json!({"id":id(),"at":stamp(offset)}))
+                .unwrap();
+        }
+        let data = measures(&s, end).unwrap();
+        assert_eq!(data["weeks"][0]["week"], "2024-02-28");
+        assert_eq!(data["weeks"][0]["until"], "2024-03-05");
+        assert_eq!(data["weeks"][0]["days"].as_array().unwrap().len(), 2);
+        assert_eq!(data["weeks"][0]["turns"], 3);
+        assert_eq!(data["weeks"][0]["clarifications"], 1);
+        assert_eq!(data["weeks"][0]["rejections"], 1);
+        assert_eq!(data["weeks"][1]["week"], "2024-03-06");
+        assert_eq!(data["weeks"][1]["until"], "2024-03-12");
+        assert_eq!(data["weeks"][1]["turns"], 2);
+        assert_eq!(data["weeks"][1]["clarifications"], 0);
+        assert_eq!(data["weeks"][1]["rejections"], 2);
+        assert!(measures(&s, Local::now().date_naive() + Duration::days(1)).is_err());
+    }
+
+    #[test]
+    fn skill_reuse_counts_retired_methods_and_keeps_the_first_learning_date() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::with_key(temp.path().to_owned(), &[3; 32]).unwrap();
+        let now = chrono::Utc::now();
+        let created = now - Duration::days(65);
+        let skill = |id: &str, at| json!({"id":id,"title":"Plan an outing","body":"Give a quiet option.","learned":{"at":at}});
+        let active = id();
+        let retired = id();
+        crate::conversation::save_skill(&store, &skill(&active, created)).unwrap();
+        crate::conversation::save_skill(&store, &skill(&active, now)).unwrap();
+        crate::conversation::save_skill(&store, &skill(&retired, created)).unwrap();
+        let dir = store.root.join("scroll/skills");
+        let archived = dir.join("retired");
+        fs::create_dir_all(&archived).unwrap();
+        let folder = format!("plan-an-outing-{retired}");
+        fs::rename(dir.join(&folder), archived.join(folder)).unwrap();
+        store
+            .put(
+                "chat",
+                &json!({"id":id(),"turns":[
+                    {"at":created+Duration::days(2),"methodId":active},
+                    {"at":created+Duration::days(31),"methodId":retired}
+                ]}),
+            )
+            .unwrap();
+        let measure = measures(&store, Local::now().date_naive()).unwrap();
+        assert_eq!(measure["eligibleSkills"], 2);
+        assert_eq!(measure["reusedSkills"], 1);
+        assert_eq!(crate::conversation::skills(&store).unwrap().len(), 1);
+    }
+
     #[test]
     fn export_contains_owned_files_and_excludes_secrets() {
         let temp = tempfile::tempdir().unwrap();
