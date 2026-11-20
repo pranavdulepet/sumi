@@ -656,3 +656,37 @@ body:has(.think-page) header span { visibility: hidden; }
   .think-copy { grid-template-columns: 1fr; gap: 12px; }
   .think-copy .small { max-width: 28em; }
 }
+
+.first-lesson {
+  max-width: 57rem;
+  margin: clamp(3rem, 15vh, 9rem) auto 4rem;
+  padding: 0 clamp(1.25rem, 5vw, 4rem);
+}
+.correction-page {
+  display: grid;
+  grid-template-columns: minmax(0, 32rem) minmax(10rem, 13rem);
+  align-items: start;
+  gap: clamp(2rem, 6vw, 5rem);
+  font: 400 19px/1.7 'Shippori Mincho', Georgia, serif;
+}
+.correction-page h1 {font: inherit; font-size: 27px; letter-spacing: normal; margin: 0 0 1.5rem;}
+.correction-page textarea {width: 100%; min-height: 8rem; resize: vertical; border: 0; border-bottom: 1px solid currentColor; border-radius: 0; padding: .5rem 0; background: transparent; color: inherit; font: inherit;}
+.correction-page blockquote {margin: .4rem 0 1.6rem; border: 0; padding: 0; white-space: pre-wrap;}
+.correction-page label, .correction-page small, .correction-page aside {font: inherit; font-size: 15px;}
+.correction-page aside {border-inline-start: 1px solid var(--line); padding-inline-start: 1.4rem;}
+.correction-page aside p {margin: 0 0 1rem;}
+.correction-page button {display: block; text-align: left; font: inherit; margin: .6rem 0;}
+.correction-page .ink-action {display: flex; align-items: center; gap: .6rem; font-weight: 600;}
+.ink-action svg {flex: 0 0 2rem; width: 2rem; height: 2rem; color: var(--seal, #a14332); transform: rotate(-5deg);}
+.ink-action:active svg {transform: rotate(-5deg) scale(.92);}
+.correction-note small {display: block; opacity: .7;}
+.correction-writing, .correction-note {overflow-wrap: anywhere;}
+@media (max-width: 660px) {
+  .first-lesson {margin-top: 2.5rem;}
+  .correction-page {grid-template-columns: 1fr; gap: 1.3rem;}
+  .correction-page aside {border: 0; padding: 0;}
+}
+body:has(.first-lesson)::after {display: none;}
+header.blank-binding {position: absolute; top: 0; height: 1.8rem; width: 100%; background: transparent; border: 0;}
+.ink-action svg {box-sizing: border-box; border: 1.5px solid currentColor; border-radius: 3px 2px 4px 1px; flex-basis: 1.8rem; width: 1.8rem; height: 1.8rem;}
+.ink-action svg path {stroke-width: 9;}

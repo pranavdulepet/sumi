@@ -165,10 +165,12 @@ export function ThinkingSettings({
   data,
   act,
   close,
+  teach,
 }: {
   data: Row;
   act: Action;
   close: () => void;
+  teach: () => void;
 }) {
   const plan = data.model?.runtime === 'ChatGPT';
   return (
@@ -179,6 +181,7 @@ export function ThinkingSettings({
       </div>
       <section>
         <h2>How Sumi thinks</h2>
+        {data.model && <button onClick={teach}>Start with a correction</button>}
         <p>
           {plan
             ? 'Your notebook stays on this Mac. Sumi thinks with your ChatGPT plan.'

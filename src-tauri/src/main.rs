@@ -2,6 +2,7 @@ mod agent_link;
 mod app;
 mod bundled;
 mod catalog;
+mod correction;
 mod engine;
 mod exports;
 mod first_reading;

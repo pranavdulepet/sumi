@@ -11,6 +11,7 @@ import '@fontsource/shippori-mincho/latin-400.css';
 import '@fontsource/zen-kaku-gothic-new/latin-400.css';
 import '@fontsource/zen-kaku-gothic-new/latin-500.css';
 import {Desk} from './Desk';
+import {FirstCorrection} from './FirstCorrection';
 import {Scroll} from './Scroll';
 import {Mirror} from './Mirror';
 import {Seal} from './Seal';
@@ -32,6 +33,7 @@ function Notebook() {
     [place, go] = useState<Place>('Desk'),
     [nav, menu] = useState(false),
     [settings, showSettings] = useState(false),
+    [teaching, teach] = useState(false),
     [focusWaiting, setFocusWaiting] = useState(false),
     [error, fail] = useState('');
   const queue = useRef(Promise.resolve()),
@@ -60,7 +62,12 @@ function Notebook() {
         op === 'surprise'
       )
         await refresh().catch(() => {});
-      if (op !== 'connectPlan') fail(String(e));
+      if (
+        op !== 'connectPlan' &&
+        !op.endsWith('Correction') &&
+        !(data?.firstCorrection && ['breakSeal', 'verdict'].includes(op))
+      )
+        fail(String(e));
       throw e;
     }
   };
@@ -160,11 +167,19 @@ function Notebook() {
     window.addEventListener('keydown', f);
     return () => window.removeEventListener('keydown', f);
   }, [data?.setup]);
+  const lessonOpen = data?.setup && (teaching || !!data.firstCorrection);
   return (
     <>
-      <header data-tauri-drag-region>
-        <span className="brand">墨</span>
-        <span>Sumi</span>
+      <header
+        data-tauri-drag-region
+        className={data?.setup && !lessonOpen ? undefined : 'blank-binding'}
+      >
+        {data?.setup && !lessonOpen && (
+          <>
+            <span className="brand">墨</span>
+            <span>Sumi</span>
+          </>
+        )}
       </header>
       {error && (
         <div className="error" role="alert">
@@ -190,6 +205,20 @@ function Notebook() {
           refresh={refresh}
           finish={() => act('finish')}
         />
+      ) : lessonOpen ? (
+        <main className="first-lesson">
+          <FirstCorrection
+            data={data}
+            act={async (op, args) => {
+              const value = await act(op, args);
+              if (op === 'finish') {
+                teach(false);
+                navigate('Desk');
+              }
+              return value;
+            }}
+          />
+        </main>
       ) : (
         <>
           <div key={place} className="unroll">
@@ -198,6 +227,7 @@ function Notebook() {
                 data={data}
                 act={act}
                 close={() => showSettings(false)}
+                teach={() => teach(true)}
               />
             ) : place === 'Desk' ? (
               <Desk

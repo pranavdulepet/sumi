@@ -6,7 +6,6 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
   rename,
   rm,
   stat,
@@ -104,10 +103,57 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     await page.getByRole('button', {name: 'Keep my mark'}).click();
     await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
+    await expect(page.getByLabel('Your correction')).toBeVisible();
+    await expect(
+      page.getByRole('button', {name: /export|chat history/i}),
+    ).toHaveCount(0);
     await page
-      .getByRole('button', {name: 'Continue with a clean page'})
-      .click();
+      .getByLabel('Your correction')
+      .fill(
+        'For a print proof, I asked for uncoated paper so I could mark it in pencil.',
+      );
+    await page.getByRole('button', {name: 'Read my correction'}).click();
+    const learned = page.getByLabel('What Sumi learned');
+    await expect(learned).toHaveValue(/paper|pencil/i, {timeout: 90000});
+    expect((await rpc('state')).entries).toHaveLength(0);
+    const rule =
+      'For pencil proofing, I always choose uncoated paper over glossy paper.';
+    await learned.fill(rule);
+    await page.getByRole('button', {name: 'Keep this sentence'}).click();
+    await expect(page.getByText(rule, {exact: true})).toBeVisible();
+    await page.reload();
+    await page
+      .getByLabel('Your next decision')
+      .fill('For the pencil proof, should I order glossy or uncoated paper?');
+    await page.getByRole('button', {name: 'Make a guess'}).click();
+    await expect(page.getByLabel('Your decision')).toBeVisible({
+      timeout: 90000,
+    });
+    const hidden = await rpc('state');
+    expect(hidden.sealed.guess).toBeUndefined();
+    expect(hidden.sealed.ruleIds).toContain(hidden.firstCorrection.id);
+    expect(hidden.scores).toHaveLength(0);
+    await page.reload();
+    await page.getByLabel('Your decision').fill('Order uncoated paper.');
+    await page.getByRole('button', {name: 'Open the seal'}).click();
+    await expect(page.getByText('The sentence Sumi read')).toBeVisible();
+    expect((await rpc('state')).sealed.guess).toMatch(/uncoated/i);
+    await page.screenshot({path: info.outputPath('correction-reveal.png')});
+    await page.getByRole('button', {name: 'It matched'}).click();
     await page.getByRole('button', {name: 'Open the Desk'}).click();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    const completed = await rpc('state');
+    expect(completed.entries).toHaveLength(1);
+    expect(completed.firstCorrection).toBeNull();
+    await page.keyboard.press('Meta+,');
+    await page.getByRole('button', {name: 'Start with a correction'}).click();
+    await expect(page.getByLabel('Your correction')).toHaveValue('');
+    await page.getByRole('button', {name: 'Return to my notebook'}).click();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    expect(completed.sources).toHaveLength(0);
+    expect(completed.requestedExport).toBeNull();
+    await rpc('newSheet');
+    await page.reload();
     await page
       .getByLabel('Desk sheet')
       .fill('Should I keep the meeting brief or make it detailed');
@@ -119,7 +165,7 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     await page.getByRole('button', {name: 'It missed'}).click();
     await page.keyboard.press('Meta+3');
     await expect(
-      page.getByText('0 of 1 scored guesses matched.'),
+      page.getByText('1 of 2 scored guesses matched.'),
     ).toBeVisible();
     await page.keyboard.press('Meta+2');
     await page.getByRole('button', {name: 'Write an entry'}).click();
@@ -144,7 +190,9 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     ).toBeVisible();
     const range = page.getByLabel('Scroll history');
     await range.focus();
-    await range.press('Home');
+    await range.press('End');
+    await range.press('ArrowLeft');
+    await range.press('ArrowLeft');
     await expect(
       page.getByRole('button', {
         name: 'I choose short meetings when the agenda is clear.',
@@ -166,7 +214,7 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     await expect(page.getByRole('heading', {name: 'The Seal'})).toBeVisible();
     await page.reload();
     await expect(page.getByLabel('Desk sheet')).toHaveValue(/Should I keep/);
-    const sheet = (await readdir(join(folder, 'desk')))[0];
+    const sheet = (await rpc('state')).current + '.md';
     expect(await readFile(join(folder, 'desk', sheet), 'utf8')).toContain(
       'Should I keep',
     );
@@ -229,8 +277,10 @@ test('first reading shows a recent reply and leaves older history for idle time'
     await page.goto('/');
     await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
-    await page.getByRole('button', {name: 'Import chat export'}).click();
-    await page.getByRole('button', {name: 'Begin the first reading'}).click();
+    // Simulate a reading already requested on a previous build.
+    await rpc('pickSource', {kind: 'export'});
+    await rpc('beginFirstReading', {notify: false});
+    await page.reload();
     await expect(
       page.getByText('Sumi hid 1 reply before making its guess.'),
     ).toBeVisible({timeout: 90000});
@@ -304,8 +354,9 @@ test('first reading survives a reloaded window and resumes a scored notebook aft
       };
     });
     await page.goto('/');
-    await page.getByRole('button', {name: 'Import chat export'}).click();
-    await page.getByRole('button', {name: 'Begin the first reading'}).click();
+    await notebook.rpc('pickSource', {kind: 'export'});
+    await notebook.rpc('beginFirstReading', {notify: false});
+    await page.reload();
     await expect(
       page.getByRole('heading', {name: 'Reading your words.'}),
     ).toBeVisible();
@@ -1184,10 +1235,9 @@ test('resume the publisher’s real GGUF download and seal a decision without an
     expect(steps).toContain(offset);
     expect(steps.some(n => n > offset)).toBeTruthy();
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
-    await page
-      .getByRole('button', {name: 'Continue with a clean page'})
-      .click();
-    await page.getByRole('button', {name: 'Open the Desk'}).click();
+    await expect(page.getByLabel('Your correction')).toBeVisible();
+    await writer.rpc('finish');
+    await page.reload();
     await page
       .getByLabel('Desk sheet')
       .fill('Should I sketch the cover first or start painting right away?');
@@ -1286,10 +1336,9 @@ test('the ChatGPT choice waits for a completed check and keeps advanced setup in
       'Connected to your ChatGPT plan.',
     );
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
-    await page
-      .getByRole('button', {name: 'Continue with a clean page'})
-      .click();
-    await page.getByRole('button', {name: 'Open the Desk'}).click();
+    await expect(page.getByLabel('Your correction')).toBeVisible();
+    await rpc('finish');
+    await page.reload();
     await expect(page.getByLabel('Desk sheet')).toBeVisible();
     await page.keyboard.press('Meta+,');
     await expect(

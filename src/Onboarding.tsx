@@ -1,6 +1,7 @@
 import {ExportArrival} from './ExportArrival';
 import {ConnectAgents} from './Seal';
 import {Think} from './Thinking';
+import {FirstCorrection} from './FirstCorrection';
 import {useState, useEffect} from 'react';
 import {call, type Row, type Action} from './api';
 import {MarkPad, Stroke, Enso} from './Ink';
@@ -213,9 +214,15 @@ export function Onboarding({
       setBusy(false);
     }
   }
+  if (step === 2 && !job)
+    return (
+      <main className="first-lesson">
+        <FirstCorrection data={data} act={act} />
+      </main>
+    );
   return (
     <main className={'welcome stage-' + step}>
-      {step !== 1 && (
+      {step >= 2 && (
         <div className="folio">
           SUMI <span>／</span> FIRST READING
         </div>
@@ -242,14 +249,12 @@ export function Onboarding({
       ) : step === 2 ? (
         <>
           <h1>
-            {running || busy
-              ? 'Reading your words.'
-              : 'Your words, by invitation.'}
+            {running || busy ? 'Reading your words.' : 'Your earlier reading.'}
           </h1>
           <p className="lede">
             {running || busy
               ? 'You can close this window. If you quit Sumi, the reading resumes when you return.'
-              : 'Choose the conversations Sumi may learn from.'}
+              : 'Continue the reading you previously selected.'}
           </p>
           {running || busy ? (
             <div className="reading" aria-live="polite">
@@ -262,11 +267,6 @@ export function Onboarding({
             </div>
           ) : (
             <>
-              <Sources
-                sources={data.sources}
-                request={data.requestedExport}
-                act={act}
-              />
               {data.sources.length > 0 && (
                 <label className="check">
                   <input

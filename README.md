@@ -8,7 +8,7 @@ Sumi is a private notebook for Apple Silicon Macs running macOS 14 or later. It 
 
 Download **Sumi-macOS.zip** from the [latest release](https://github.com/pranavdulepet/sumi/releases/latest), unzip it, and move Sumi to Applications. Move the app to its lasting location before connecting agents. This build uses an ad-hoc signature. A rebuilt copy may trigger macOS Keychain authorization for the existing notebook. The release has no Apple notarization ticket.
 
-Draw your mark, then choose **Continue with ChatGPT**. Your notebook stays on this Mac. OpenAI receives the passages used for predictions, writing suggestions, grading and readings. Sumi asks your eligible ChatGPT plan to answer a short connection check before setup continues. You choose which conversations Sumi may read.
+Draw your mark, then choose **Continue with ChatGPT**. Your notebook stays on this Mac. OpenAI receives the passages used for predictions, writing suggestions, grading and readings. Sumi asks your eligible ChatGPT plan to answer a short connection check before setup continues. Start with one correction from your own work. Sumi suggests a sentence you can edit and keep. Give it a related decision, record your choice, then open its sealed guess. You can see the sentence it consulted and mark whether it matched.
 
 Choose **Think on this Mac instead** for local thinking. Sumi checks an installed model or offers a local download. Open **Settings** with ⌘, to switch later, disconnect ChatGPT or manage other model connections.
 
@@ -16,7 +16,7 @@ You can close the window during the first reading. If you quit the app, opening 
 
 The first reading prioritizes replies from the last 90 days. For a long coding session, it starts near the end so your latest decisions can reach the notebook first. Sumi picks up the rest while your Mac is idle and plugged in.
 
-Choose **Request ChatGPT history** to open the export page. Sumi then watches Downloads for a completed chat archive. You can keep writing or quit Sumi while you wait. When the file arrives, choose whether to add it from the Desk or Sources. **Stop looking** cancels the request.
+Later, open **Seal → Sources and readings** to add selected conversations. Choose **Request ChatGPT history** to open the export page. Sumi then watches Downloads for a completed chat archive. You can keep writing or quit Sumi while you wait. When the file arrives, choose whether to add it from the Desk or Sources. **Stop looking** cancels the request.
 
 When you import a ChatGPT archive, Sumi reads the conversation branch selected at export time. If the export omits the selection, Sumi reads the shared history up to the first fork. To replace a previously imported archive and its learned history, open **Seal**, remove that source, confirm **Forget source**, then import the archive again.
 

@@ -32,6 +32,18 @@ fn desk_day(a: &Value) -> Res<chrono::NaiveDate> {
         None => Ok(chrono::Local::now().date_naive()),
     }
 }
+fn visible_seal(s: &Store, k: &str) -> Res<Option<Value>> {
+    Ok(s.list("sealed")?
+        .into_iter()
+        .find(|v| v["sheet"] == k)
+        .map(|mut v| {
+            if v["actual"].is_null() {
+                v.as_object_mut().unwrap().remove("guess");
+            }
+            v
+        }))
+}
+
 pub fn state(s: &Store) -> Res<Value> {
     let current = s.get("current")?;
     let k = current.as_str().ok_or("Missing current sheet.")?;
@@ -61,22 +73,20 @@ pub fn state(s: &Store) -> Res<Value> {
             v
         })
         .collect::<Vec<_>>();
-    let sealed = s
-        .list("sealed")?
-        .into_iter()
-        .find(|v| v["sheet"] == k)
-        .map(|mut v| {
-            if v["actual"].is_null() {
-                v.as_object_mut().unwrap().remove("guess");
-            }
-            v
-        });
+    let sealed = visible_seal(s, k)?;
+    let mut correction = s.get("firstCorrection")?;
+    if let Some(sheet) = correction["sheet"].as_str() {
+        let guess = visible_seal(s, sheet)?;
+        let question = s.sheet(sheet)?;
+        correction["sealed"] = json!(guess);
+        correction["question"] = json!(question);
+    }
     let scores = s.list("prediction")?;
     let entries = scroll::approved(s)?;
     let mut surprises = crate::mirror::reviews(&scores, &entries, chrono::Utc::now());
     surprises.truncate(3);
     Ok(
-        json!({"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"planUsage":s.get(&format!("budget/{}/ChatGPT",chrono::Utc::now().format("%Y-%m")))?, "providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
+        json!({"firstCorrection":correction,"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"planUsage":s.get(&format!("budget/{}/ChatGPT",chrono::Utc::now().format("%Y-%m")))?, "providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
     )
 }
 pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
@@ -147,7 +157,11 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             s.set("mark", &a["points"])?;
             Ok(Value::Null)
         }
+        "readCorrection" => crate::correction::read(s, text(a, "text")?),
+        "keepCorrection" => crate::correction::keep(s, text(a, "id")?, text(a, "text")?),
+        "tryCorrection" => crate::correction::decide(s, text(a, "id")?, text(a, "question")?),
         "finish" => {
+            let _lock = s.edit.lock().unwrap();
             if s.get("onboardedAt")?.is_null() {
                 s.set("onboardedAt", &json!(now()))?;
             }
@@ -155,6 +169,7 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
                 return Err("Your seal needs a brushstroke.".into());
             }
             s.set("onboarded", &json!(true))?;
+            s.set("firstCorrection", &Value::Null)?;
             Ok(Value::Null)
         }
         "addSource" => {
@@ -249,13 +264,13 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             if s.list("sealed")?.iter().any(|v| v["sheet"] == k) {
                 return Err("This sheet already has a sealed guess.".into());
             }
-            let q = sources::audit(&question).ok_or("This passage stays on the sheet.")?;
-            let model = s.get("model")?;
-            let support = engine::select_rules(s, &model, &q, scroll::approved(s)?);
-            let guess = engine::predict_ranked(s, &model, &q, &support, crate::jobs::prompt(s))?;
-            let v = json!({"ruleRevisions":crate::mirror::rule_revisions(&support),"ruleIds":support.iter().map(|r|r["id"].clone()).collect::<Vec<_>>(),"sources":support.iter().flat_map(|r|r["sources"].as_array().into_iter().flatten()).collect::<Vec<_>>(),"id":id(),"sheet":k,"question":q,"guess":guess,"date":now(),"model":model["name"],"actual":null});
-            s.put("sealed", &v)?;
-            Ok(json!({"id":v["id"]}))
+            seal_decision(
+                s,
+                k,
+                &question,
+                scroll::approved(s)?,
+                crate::jobs::prompt(s),
+            )
         }
         "breakSeal" => {
             let _lock = s.edit.lock().unwrap();
@@ -403,4 +418,21 @@ pub fn register(s: &Store, key: &str, path: &Path, label: &str) -> Res<Value> {
     let v = json!({"id":key,"label":label,"path":path.to_string_lossy(),"added":now()});
     s.put("source", &v)?;
     Ok(v)
+}
+
+// Caller holds the notebook edit lock.
+pub(crate) fn seal_decision(
+    s: &Store,
+    k: &str,
+    question: &str,
+    rules: Vec<Value>,
+    prompt: &str,
+) -> Res<Value> {
+    let q = sources::audit(question).ok_or("This passage stays on the sheet.")?;
+    let model = s.get("model")?;
+    let support = engine::select_rules(s, &model, &q, rules);
+    let guess = engine::predict_ranked(s, &model, &q, &support, prompt)?;
+    let v = json!({"ruleRevisions":crate::mirror::rule_revisions(&support),"ruleIds":support.iter().map(|r|r["id"].clone()).collect::<Vec<_>>(),"sources":support.iter().flat_map(|r|r["sources"].as_array().into_iter().flatten()).collect::<Vec<_>>(),"id":id(),"sheet":k,"question":q,"guess":guess,"date":now(),"model":model["name"],"actual":null});
+    s.put("sealed", &v)?;
+    Ok(json!({"id":v["id"]}))
 }

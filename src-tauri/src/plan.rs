@@ -337,7 +337,18 @@ mod tests {
                 if !grade {
                     assert!(!input.contains("unseenanswer"));
                 }
-                let reply = if grade {
+                let reply = if instructions.starts_with("Read a person's correction.") {
+                    assert!(input.contains("margins for notes"));
+                    "I prefer wide margins for handwritten notes."
+                } else if instructions.starts_with("Answer the situation") {
+                    let payload: Value = serde_json::from_str(input).unwrap();
+                    assert_eq!(
+                        payload["rules"],
+                        json!(["Leave wide margins on workshop handouts."])
+                    );
+                    assert!(!input.contains("narrow maybe"));
+                    "Leave wide margins."
+                } else if grade {
                     r#"{"grade":2,"reason":"Same action."}"#
                 } else if instructions.starts_with(include_str!("../../prompts/reflect.txt")) {
                     r#"{"text":"Start with a sketch.","section":"writing","evidence":["E0","E1"]}"#
@@ -429,8 +440,40 @@ mod tests {
             .unwrap();
         app::action(&s, "sealGuess", &json!({"id":sheet})).unwrap();
         assert_eq!(s.list("sealed").unwrap()[0]["model"], "eligible");
+        let lesson = app::action(
+            &s,
+            "readCorrection",
+            &json!({"text":"Please give me wider margins for notes."}),
+        )
+        .unwrap();
+        let approval = json!({"id":lesson["id"],"text":"Leave wide margins on workshop handouts."});
+        app::action(&s, "keepCorrection", &approval).unwrap();
+        app::action(&s, "keepCorrection", &approval).unwrap();
+        let decision =
+            json!({"id":lesson["id"],"question":"How should I lay out the next workshop handout?"});
+        let seal = app::action(&s, "tryCorrection", &decision).unwrap();
+        assert_eq!(app::action(&s, "tryCorrection", &decision).unwrap(), seal);
+        assert!(app::state(&s).unwrap()["firstCorrection"]["sealed"]["guess"].is_null());
+        let opened = app::action(
+            &s,
+            "breakSeal",
+            &json!({"id":seal["id"],"actual":"narrow maybe"}),
+        )
+        .unwrap();
+        assert_eq!(opened["guess"], "Leave wide margins.");
+        app::action(&s, "verdict", &json!({"id":seal["id"],"right":false})).unwrap();
+        assert_eq!(
+            s.doc("prediction", seal["id"].as_str().unwrap()).unwrap()["grade"],
+            0
+        );
         let routes = s.list("route").unwrap();
-        for job in ["prediction", "grading", "reflection", "ghost ink"] {
+        for job in [
+            "prediction",
+            "grading",
+            "reflection",
+            "ghost ink",
+            "correction",
+        ] {
             assert!(
                 routes
                     .iter()
