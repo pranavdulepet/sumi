@@ -165,7 +165,7 @@ export function Onboarding({
   const [choice, quiz] = useState<Row | null>(null),
     [last, result] = useState<Row | null>(null);
   const [chosenStep, go] = useState(
-    data.model && data.mark ? 2 : data.mark ? 1 : 0,
+    data.firstCorrection ? 2 : data.mark ? 1 : 0,
   );
   const [busy, setBusy] = useState(false);
   const [err, error] = useState('');
@@ -236,7 +236,7 @@ export function Onboarding({
           />
         </>
       ) : step === 1 ? (
-        <Think act={act} data={data} next={() => go(2)} />
+        <Think act={act} data={data} next={finish} />
       ) : step === 2 ? (
         <>
           <h1>

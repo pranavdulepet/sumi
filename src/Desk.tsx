@@ -4,7 +4,6 @@ import {type Row, type Action, day} from './api';
 import {useGhostInk} from './useGhostInk';
 import {Stroke} from './Ink';
 import {Reply} from './Reply';
-import {MethodEditor} from './Methods';
 import {marginGoal, paragraphAt} from './margin';
 export function Desk({
   data,
@@ -29,8 +28,6 @@ export function Desk({
     [privateSheet, setPrivate] = useState(
       data.sheets?.find((s: Row) => s.id === data.current)?.private === true,
     ),
-    [skill, pickSkill] = useState(''),
-    [draftSkill, setDraftSkill] = useState<Row | null>(null),
     [actual, setActual] = useState(''),
     [busy, setBusy] = useState(false),
     [caret, setCaret] = useState(0),
@@ -42,18 +39,6 @@ export function Desk({
   const pending = useRef<{text: string; id: string} | null>(null);
   const turns: Row[] = data.chat?.turns || [];
   const leaf = useRef<HTMLDivElement>(null);
-  const latestEntry = useMemo(
-    () =>
-      (data.entries as Row[]).reduce<Row | undefined>(
-        (last, entry) =>
-          entry.authored &&
-          (!last || (entry.updated || '') >= (last.updated || ''))
-            ? entry
-            : last,
-        undefined,
-      ),
-    [data.entries],
-  );
   async function send() {
     if (!text.trim() || sending.current || busy) return;
     sending.current = true;
@@ -67,7 +52,6 @@ export function Desk({
         turn: pending.current.id,
         text,
         private: privateSheet,
-        skill,
       });
       const turn = pending.current.id;
       requestAnimationFrame(() => {
@@ -101,19 +85,6 @@ export function Desk({
       setBusy(false);
     }
   }
-  async function saveMethod(turn: Row) {
-    setBusy(true);
-    setError('');
-    try {
-      setDraftSkill(
-        await act('draftSkill', {sheet: data.current, turn: turn.id}),
-      );
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
   useEffect(() => {
     const sheets = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') {
@@ -130,7 +101,9 @@ export function Desk({
     data.current,
     !!sealed ||
       (data.model?.runtime === 'ChatGPT' &&
-        (privateSheet || data.chat?.private || !!skill)),
+        (privateSheet ||
+          data.chat?.private ||
+          data.skills?.some((s: Row) => s.private))),
     record,
     data.model?.runtime === 'ChatGPT',
   );
@@ -229,27 +202,6 @@ export function Desk({
             Keep this sheet local
           </label>
         )}
-        {latestEntry && (
-          <div className="last-correction">
-            <small>From your Scroll</small>
-            <p>{latestEntry.text}</p>
-          </div>
-        )}
-        {data.chat?.private && <small>Thinking on this Mac</small>}
-        {!!data.skills?.length && (
-          <details className="method-picker">
-            <summary>
-              {data.skills.find((v: Row) => v.id === skill)?.title ||
-                'Use a skill'}
-            </summary>
-            <button onClick={() => pickSkill('')}>Choose automatically</button>
-            {data.skills.map((v: Row) => (
-              <button key={v.id} onClick={() => pickSkill(v.id)}>
-                {v.title}
-              </button>
-            ))}
-          </details>
-        )}
         {margin && (
           <aside className="margin-note" aria-label="Goal from your Scroll">
             <small>
@@ -308,36 +260,78 @@ export function Desk({
             <p className="asked">{t.question}</p>
             <small>Sumi</small>
             <Reply text={t.reply} />
+            {t.timeline?.length > 0 && (
+              <ol
+                className="memory-timeline"
+                aria-label="Your earlier instructions"
+              >
+                {t.timeline.map((p: Row, i: number) => (
+                  <li key={i}>
+                    <time dateTime={p.when}>
+                      {p.approximate ? 'Sheet dated ' : ''}
+                      {new Date(p.when).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                      })}
+                    </time>
+                    <p>{p.words}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
+            {t.worksheet && (
+              <dl className="calculations" aria-label="Working">
+                {t.tools
+                  .filter((v: Row) => v.value != null || v.date)
+                  .map((v: Row) => (
+                    <div key={v.tool}>
+                      <dt>{v.tool === 'Calendar' ? 'Date' : 'Calculation'}</dt>
+                      <dd>{v.display}</dd>
+                    </div>
+                  ))}
+              </dl>
+            )}
             <details className="receipt">
               <summary>Behind this reply</summary>
               <p>
-                {t.runtime} · {t.model}
+                {t.timeline?.length
+                  ? 'Quoted from your notebook'
+                  : t.runtime + ' · ' + t.model}
               </p>
+              {t.selector &&
+                (t.timeline?.length > 0 ||
+                  t.selector !== t.model ||
+                  t.selectorRuntime !== t.runtime) && (
+                  <p>
+                    Selected by {t.selectorRuntime} · {t.selector}
+                  </p>
+                )}
               {t.rules.map((r: string) => (
                 <blockquote key={r}>{r}</blockquote>
               ))}
               {t.skill && <p>Skill · {t.skill}</p>}
-              <button disabled={busy} onClick={() => saveMethod(t)}>
-                Make this a skill
-              </button>
+              {(t.tools || []).map((tool: Row) => (
+                <div key={tool.tool}>
+                  <p>
+                    {tool.tool} · {tool.display}
+                  </p>
+                  {tool.passages?.map((p: Row, i: number) => (
+                    <blockquote key={i}>
+                      <small>
+                        {p.approximate ? 'Sheet dated ' : ''}
+                        {new Date(p.when).toLocaleString()}
+                      </small>
+                      {p.words}
+                    </blockquote>
+                  ))}
+                </div>
+              ))}
             </details>
           </article>
         ))}
-        {turns[turns.length - 1]?.repeat && !draftSkill && (
-          <button
-            disabled={busy}
-            onClick={() => saveMethod(turns[turns.length - 1])}
-          >
-            Keep this repeated method?
-          </button>
-        )}
-        {draftSkill && (
-          <MethodEditor
-            skill={draftSkill}
-            act={act}
-            close={() => setDraftSkill(null)}
-          />
-        )}
         <div className="writing">
           {ghost && (
             <div className="ghost-layer" aria-hidden="true">
@@ -348,6 +342,7 @@ export function Desk({
           )}
           <textarea
             aria-label="Desk sheet"
+            aria-keyshortcuts="Enter Shift+Enter"
             autoFocus
             placeholder={turns.length ? 'And then…' : 'What’s on your mind?'}
             disabled={busy}
@@ -374,7 +369,7 @@ export function Desk({
             }}
             onKeyDown={e => {
               if (e.nativeEvent.isComposing) return;
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !sealed) {
+              if (!e.shiftKey && !e.altKey && e.key === 'Enter' && !sealed) {
                 e.preventDefault();
                 void send();
                 return;

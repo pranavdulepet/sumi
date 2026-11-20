@@ -4,6 +4,7 @@ mod bundled;
 mod catalog;
 mod conversation;
 mod correction;
+mod desk_tools;
 mod engine;
 mod exports;
 mod first_reading;

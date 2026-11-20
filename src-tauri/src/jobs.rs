@@ -57,6 +57,9 @@ pub fn start(s: Arc<Store>) {
             if !local::idle() || s.reading.load(Ordering::SeqCst) {
                 continue;
             }
+            if let Err(e) = crate::conversation::dream(&s) {
+                let _ = s.set("backgroundIssue", &json!(e));
+            }
             if crate::catalog::configured()
                 && s.get("catalogOff").ok() != Some(json!(true))
                 && elapsed(&s.get("catalogChecked").unwrap_or_default()) >= WEEK

@@ -103,6 +103,7 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     await page.getByRole('button', {name: 'Keep my mark'}).click();
     await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
+    await page.getByRole('button', {name: 'Teach a correction'}).click();
     await expect(page.getByLabel('Your correction')).toBeVisible();
     await expect(
       page.getByRole('button', {name: /export|chat history/i}),
@@ -278,7 +279,8 @@ test('first reading shows a recent reply and leaves older history for idle time'
     });
     await page.goto('/');
     await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
-    await page.getByRole('button', {name: 'Continue', exact: true}).click();
+
+    await expect(page.getByText('Ready to think on this Mac.')).toBeVisible();
     // Simulate a reading already requested on a previous build.
     await rpc('pickSource', {kind: 'export'});
     await rpc('beginFirstReading', {notify: false});
@@ -1242,8 +1244,7 @@ test('resume the publisher’s real GGUF download and seal a decision without an
     expect(steps).toContain(offset);
     expect(steps.some(n => n > offset)).toBeTruthy();
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
-    await expect(page.getByLabel('Your correction')).toBeVisible();
-    await writer.rpc('finish');
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
     await page.reload();
     await page
       .getByLabel('Desk sheet')
@@ -1343,8 +1344,7 @@ test('the ChatGPT choice waits for a completed check and keeps advanced setup in
       'Connected to your ChatGPT plan.',
     );
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
-    await expect(page.getByLabel('Your correction')).toBeVisible();
-    await rpc('finish');
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
     await page.reload();
     await expect(page.getByLabel('Desk sheet')).toBeVisible();
     await page.keyboard.press('Meta+,');
@@ -1423,31 +1423,21 @@ test('one sheet keeps a conversation, a correction, and a reusable method', asyn
       'Help me plan a museum visit again, this time with five minutes to look at the painting.',
       3,
     );
-    await page
-      .getByRole('button', {name: 'Keep this repeated method?'})
-      .click();
-    await expect(page.getByLabel('Steps to keep')).not.toHaveValue('', {
-      timeout: 90000,
-    });
-    await page.getByLabel('Name this skill').fill('Museum visit');
-    await page
-      .getByLabel('Steps to keep')
-      .fill(
-        'Choose a single painting. Give the visitor a question to think about while looking at it.',
-      );
-    await page.getByRole('button', {name: 'Keep this skill'}).click();
+    await ask(
+      'For every museum visit, always choose one painting and give me a question to think about.',
+      4,
+    );
     const skill = (await rpc('state')).skills[0];
+    expect(skill.title.trim()).toBeTruthy();
     expect(
       await readFile(
         join(folder, 'scroll', 'skills', skill.id + '.md'),
         'utf8',
       ),
-    ).toContain('Choose a single painting.');
+    ).toContain('one painting');
     await page.keyboard.press('Meta+2');
-    await page.getByText('Museum visit', {exact: true}).click();
-    await expect(
-      page.getByText('Choose a single painting.', {exact: false}).first(),
-    ).toBeVisible();
+    await page.getByText(skill.title, {exact: true}).click();
+    await expect(page.getByText(skill.body, {exact: true})).toBeVisible();
     await page.screenshot({path: info.outputPath('scroll-skills.png')});
     await page.keyboard.press('Meta+1');
     await page.getByRole('button', {name: /^Sheets/}).click();
@@ -1456,11 +1446,11 @@ test('one sheet keeps a conversation, a correction, and a reusable method', asyn
     await ask('Give me a plan for a museum visit tomorrow.', 1);
     const next = await rpc('state');
     expect(next.current).not.toBe(first.current);
-    expect(next.chat.turns[0].skill).toBe('Museum visit');
+    expect(next.chat.turns[0].skill).toBe(skill.title);
     expect(next.chat.private).toBe(true);
     await page.getByText('Behind this reply', {exact: true}).click();
     await expect(page.locator('.receipt')).toContainText(
-      'Skill · Museum visit',
+      'Skill · ' + skill.title,
     );
     await page.emulateMedia({colorScheme: 'dark'});
     await page.screenshot({path: info.outputPath('night-ink.png')});
@@ -1471,6 +1461,110 @@ test('one sheet keeps a conversation, a correction, and a reusable method', asyn
     await page.getByRole('button', {name: 'Correct this reply'}).click();
     await expect(page.getByText('The reply you’re correcting')).toBeVisible();
     await expect(page.getByLabel('Your correction')).toBeVisible();
+  } finally {
+    core.stdin.end();
+  }
+});
+
+test('a dinner question chooses its own tools and remembers a change of mind', async ({
+  page,
+}, info) => {
+  const {core, rpc} = await fixtureNotebook();
+  try {
+    await rpc('mark', {
+      points: [
+        [0.12, 0.6],
+        [0.43, 0.25],
+        [0.63, 0.72],
+        [0.88, 0.4],
+      ],
+    });
+    await rpc('model', {name: 'llama3.2:3b', runtime: 'Ollama'});
+    await rpc('finish');
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    const field = page.getByLabel('Desk sheet');
+    async function say(text: string) {
+      await field.fill(text);
+      await field.press('Enter');
+      await expect(page.locator('.exchange')).toHaveCount(1, {timeout: 90000});
+      await expect(field).toHaveValue('');
+    }
+    async function fresh() {
+      await page.getByRole('button', {name: /^Sheets/}).click();
+      await page.getByRole('button', {name: /New sheet/}).click();
+      await expect(page.locator('.exchange')).toHaveCount(0);
+    }
+    const before =
+      'When we split a dinner bill, always give me just the amount per person.';
+    const after =
+      'For dinner bills, from now on show the calculation as well as the amount per person.';
+    await say(before);
+    const first = (await rpc('state')).skills[0];
+    expect(first.title.trim()).toBeTruthy();
+    expect(first.body).toBe(before);
+    await fresh();
+    await say(after);
+    const updated = (await rpc('state')).skills;
+    expect(updated).toHaveLength(1);
+    expect(updated[0].id).toBe(first.id);
+    expect(updated[0].body).toBe(after);
+    await page.reload();
+    await fresh();
+    await say(
+      'Can you split a $96 dinner bill between four people and tell me what day tomorrow is?',
+    );
+    const turn = (await rpc('state')).chat.turns[0];
+    const tomorrow = new Date(turn.at);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const weekday = tomorrow.toLocaleDateString('en-US', {weekday: 'long'});
+    const expected = tomorrow.toLocaleDateString('en-CA');
+    expect(turn.tools.find((v: any) => v.tool === 'Calendar').date).toBe(
+      expected,
+    );
+    expect(turn.tools.find((v: any) => v.tool === 'Calculator').value).toBe(24);
+    expect(turn.skill).toBe(updated[0].title);
+    await expect(page.locator('.reply')).toContainText('24');
+    await expect(page.locator('.reply')).toContainText(weekday);
+    await expect(page.getByLabel('Working')).toContainText('96/4 = 24');
+    await page.screenshot({path: info.outputPath('dinner.png')});
+    await page.getByText('Behind this reply', {exact: true}).click();
+    await expect(page.locator('.receipt')).toContainText(updated[0].title);
+    await fresh();
+    await say(
+      'What did I originally ask you to do with dinner bills, and how did that change?',
+    );
+    const timeline = page.getByLabel('Your earlier instructions');
+    await expect(timeline.locator('li')).toHaveCount(2);
+    await expect(timeline.locator('li').first()).toContainText(before);
+    await expect(timeline.locator('li').last()).toContainText(after);
+    await page.screenshot({path: info.outputPath('timeline.png')});
+    await fresh();
+    await say('My pottery budget is 84 dollars.');
+    await fresh();
+    await say(
+      'Using the pottery budget I mentioned, how much can I spend per class if I take four classes?',
+    );
+    const budget = (await rpc('state')).chat.turns[0];
+    const passages = budget.tools.find(
+      (v: any) => v.tool === 'Notebook',
+    ).passages;
+    expect(passages.map((v: any) => v.words)).toEqual([
+      'My pottery budget is 84 dollars.',
+    ]);
+    expect(budget.tools.find((v: any) => v.tool === 'Calculator')?.value).toBe(
+      21,
+    );
+    await expect(page.locator('.reply')).toContainText('21');
   } finally {
     core.stdin.end();
   }

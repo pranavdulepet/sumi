@@ -225,6 +225,11 @@ fn consume(reader: impl Read, max: usize) -> Res<String> {
 }
 
 #[cfg(test)]
+pub fn simulated_hosted_account() -> bool {
+    tests::TEST_PORT.get().is_some()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     thread_local! {pub(super) static TEST_PORT: std::cell::Cell<Option<u16>> = const {std::cell::Cell::new(None)};}
@@ -354,6 +359,8 @@ mod tests {
                     );
                     assert!(!input.contains("narrow maybe"));
                     "Leave wide margins."
+                } else if instructions.starts_with("Select tools") {
+                    r#"{"math":"","date":"","days":0,"recall":"","skill":0,"quick":false}"#
                 } else if instructions.starts_with("You are Sumi") {
                     let payload: Value = serde_json::from_str(input).unwrap();
                     assert!(payload["current_request"]

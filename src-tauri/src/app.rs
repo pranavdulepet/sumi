@@ -169,9 +169,12 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             Ok(Value::Null)
         }
         "askSheet" => crate::conversation::ask(s, a),
-        "draftSkill" => crate::conversation::draft_skill(s, a),
-        "saveSkill" => crate::conversation::save_skill(s, a),
+        "saveSkill" => {
+            let _edit = s.edit.lock().unwrap();
+            crate::conversation::save_skill(s, a)
+        }
         "removeSkill" => {
+            let _edit = s.edit.lock().unwrap();
             let key = ident(text(a, "id")?)?;
             let path = s.root.join("scroll/skills").join(format!("{key}.md"));
             if path.exists() {
