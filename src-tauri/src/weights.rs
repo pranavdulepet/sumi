@@ -101,9 +101,26 @@ impl Download<'_> {
     fn acquire(&self, free: u64) -> Res<()> {
         let dir = self.dest.parent().ok_or("Missing model directory.")?;
         fs::create_dir_all(dir).msg()?;
-        let lock = File::open(dir).msg()?;
-        lock.try_lock()
-            .map_err(|_| "A model download is already in progress in this notebook.")?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(dir.join(".download.lock"))
+            .msg()?;
+        lock.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => {
+                "A model download is already in progress in this notebook.".to_string()
+            }
+            std::fs::TryLockError::Error(error) => error.to_string(),
+        })?;
+        let result = self.acquire_locked(free);
+        // Children spawned during a download may briefly inherit the open descriptor.
+        lock.unlock().msg()?;
+        result
+    }
+    fn acquire_locked(&self, free: u64) -> Res<()> {
         if self.valid(&self.dest)? {
             return Ok(());
         }
@@ -229,6 +246,13 @@ mod tests {
         model.acquire(0).unwrap();
         assert_eq!(fs::read(&model.dest).unwrap(), b"GGUFexample");
         assert!(!model.partial().exists());
+        let other = File::open(dir.path().join(".download.lock")).unwrap();
+        other.lock().unwrap();
+        assert!(model
+            .acquire(0)
+            .unwrap_err()
+            .contains("already in progress"));
+        other.unlock().unwrap();
         model.acquire(0).unwrap();
         fs::write(&model.dest, b"GGUFcorrupt").unwrap();
         assert!(model.acquire(0).unwrap_err().contains("Free "));

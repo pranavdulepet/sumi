@@ -618,6 +618,44 @@ pub fn private_sheet(s: &Store, sheet: &str) -> Res<bool> {
             .is_some_and(|chat| chat["private"] == true))
 }
 
+fn requests_picture(lower: &str) -> bool {
+    let request = lower.trim_start_matches("please ").trim_start();
+    let request = request
+        .strip_prefix("can you ")
+        .or_else(|| request.strip_prefix("could you "))
+        .unwrap_or(request);
+    let drawing = ["draw ", "paint ", "illustrate "]
+        .iter()
+        .any(|prefix| request.starts_with(prefix));
+    let structured = [
+        "diagram",
+        "chart",
+        "graph",
+        "timeline",
+        "table",
+        "comparison",
+        "conclusion",
+    ]
+    .iter()
+    .any(|kind| {
+        request
+            .split(|c: char| !c.is_alphabetic())
+            .take(6)
+            .any(|word| word == *kind)
+    });
+    (drawing && !structured)
+        || [
+            "generate an image",
+            "make an image",
+            "create an image",
+            "generate a picture",
+            "create a picture",
+            "make a picture",
+        ]
+        .iter()
+        .any(|prefix| request.starts_with(prefix))
+}
+
 pub fn private_request(q: &str) -> bool {
     let lower = q.to_lowercase();
     [
@@ -676,7 +714,7 @@ pub fn regenerate(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value
     let private = chat["private"] == true || private_sheet(s, sheet)?;
     let model = choose_model(&primary, private, false, || local_model(s))?;
     let q = old["question"].as_str().ok_or("Missing question.")?;
-    let notes = memory::relevant(s, q, false, plan::selected(&model))?;
+    let notes = memory::relevant(s, q, false, plan::selected(&primary) && !private)?;
     let context: Vec<_> = notes
         .iter()
         .enumerate()
@@ -905,19 +943,7 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
         overlap >= 2 && overlap * 2 >= prior.len().min(terms.len()) && v["lane"] == "quick"
     });
     let lower = q.to_lowercase();
-    let image_request = !has_files
-        && [
-            "generate an image",
-            "make an image",
-            "draw me ",
-            "paint me ",
-            "create an image",
-            "generate a picture",
-            "create a picture",
-            "illustrate ",
-        ]
-        .iter()
-        .any(|cue| lower.starts_with(cue));
+    let image_request = !has_files && requests_picture(&lower);
     let drawable = image_request
         && !restricted
         && s.optional_doc("provider", "OpenRouter")?.is_some_and(|p| {
@@ -945,9 +971,11 @@ pub fn ask_with(s: &Store, a: &Value, sink: &mut dyn FnMut(&str)) -> Res<Value> 
     let quick = !visual && !corrected && routing["quick"].as_bool().unwrap_or_else(|| routine(q));
     let model = choose_model(&primary, private, quick, || local.clone())?;
     let outing = web_search::outing(q, last);
-    let mut notes = memory::relevant(s, q, outing, plan::selected(&model))?;
+    // Quick local replies can become history on a later hosted turn on the same sheet.
+    let shareable_sheet = plan::selected(&primary) && !private;
+    let mut notes = memory::relevant(s, q, outing, shareable_sheet)?;
     if !outing {
-        for n in memory::core_notes(s, plan::selected(&model))? {
+        for n in memory::core_notes(s, shareable_sheet)? {
             if !notes.iter().any(|v| v["id"] == n["id"]) {
                 notes.push(n);
             }
@@ -1217,6 +1245,17 @@ pub fn confirm_search(s: &Store, a: &Value) -> Res<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pictures_and_structured_visuals_take_different_routes() {
+        assert!(super::requests_picture("could you draw a maple tree?"));
+        assert!(!super::requests_picture(
+            "draw me a diagram of this system."
+        ));
+        assert!(!super::requests_picture(
+            "draw a conclusion from our numbers."
+        ));
+    }
+
     use super::*;
     #[test]
     #[ignore = "Consolidates repeated user requests with an installed local model"]

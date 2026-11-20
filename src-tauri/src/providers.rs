@@ -297,6 +297,22 @@ fn send_text(s: &Store, p: &Value, sys: &str, input: &str, job: &str, items: usi
     )?;
     Ok(answer)
 }
+#[cfg(test)]
+thread_local! {static ROUTER_FIXTURE:std::cell::RefCell<Option<String>>=const{std::cell::RefCell::new(None)};}
+fn router_session(s: &Store) -> Res<(String, String)> {
+    #[cfg(test)]
+    if let Some(base) = ROUTER_FIXTURE.with(|v| v.borrow().clone()) {
+        return Ok((base, "synthetic-key".into()));
+    }
+    let cred = credential(s, "OpenRouter")?;
+    Ok((
+        "https://openrouter.ai/api/v1".into(),
+        cred["key"]
+            .as_str()
+            .ok_or("Reconnect OpenRouter.")?
+            .to_owned(),
+    ))
+}
 pub fn conversation(
     s: &Store,
     p: &Value,
@@ -309,12 +325,11 @@ pub fn conversation(
         return Err("OpenRouter conversation access changed.".into());
     }
     let input = crate::plan::clean(input)?;
-    let cred = credential(s, "OpenRouter")?;
-    let key = cred["key"].as_str().ok_or("Reconnect OpenRouter.")?;
+    let (base, key) = router_session(s)?;
     let mut budget = p.clone();
     budget["enabled"] = json!(true);
     reserve(s, &budget)?;
-    let response=http().post("https://openrouter.ai/api/v1/chat/completions")
+    let response=http().post(&format!("{base}/chat/completions"))
         .set("Authorization",&format!("Bearer {key}"))
         .send_json(json!({"model":p["model"],"stream":true,"max_tokens":650,"messages":[{"role":"system","content":system},{"role":"user","content":input.to_string()}]}))
         .map_err(|_|"OpenRouter could not complete this request. Check the connection in Settings.")?;
@@ -834,11 +849,10 @@ pub fn render_image(s: &Store, a: &Value) -> Res<Value> {
         .filter(|v| !v.is_empty())
         .ok_or("Connect an image model in Settings.")?
         .to_string();
-    let credential = credential(s, "OpenRouter")?;
-    let secret = credential["key"].as_str().ok_or("Reconnect OpenRouter.")?;
+    let (base, secret) = router_session(s)?;
     provider["enabled"] = json!(true);
     reserve(s, &provider)?;
-    let response=http().post("https://openrouter.ai/api/v1/images").set("Authorization",&format!("Bearer {secret}"))
+    let response=http().post(&format!("{base}/images")).set("Authorization",&format!("Bearer {secret}"))
         .send_json(json!({"model":model,"prompt":prompt,"n":1,"output_format":"png","response_format":"b64_json"})).map_err(|_|"OpenRouter could not return an image. Check your provider activity before trying again.")?;
     let body: Value = serde_json::from_reader(response.into_reader().take(12_000_000))
         .map_err(|_| "The image response exceeded the notebook limit or could not be read.")?;
@@ -871,4 +885,65 @@ pub fn image_data(s: &Store, a: &Value) -> Res<Value> {
         "data:image/png;base64,{}",
         STANDARD.encode(bytes)
     )))
+}
+
+#[cfg(test)]
+mod router_contract {
+    use super::*;
+    #[test]
+    #[ignore = "Uses a local OpenRouter protocol fixture, no provider charges"]
+    fn model_and_picture_require_separate_consent_and_share_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::with_key(dir.path().into(), &[8; 32]).unwrap();
+        crate::app::setup(&s).unwrap();
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        ROUTER_FIXTURE.with(|r| *r.borrow_mut() = Some(format!("http://{}", server.server_addr())));
+        let image="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+tZioAAAAASUVORK5CYII=";
+        let worker = std::thread::spawn(move || {
+            for path in ["/chat/completions", "/images"] {
+                let mut req = server
+                    .recv_timeout(Duration::from_secs(8))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(req.url(), path);
+                let body: Value = serde_json::from_reader(req.as_reader()).unwrap();
+                assert!(!body.to_string().contains("unshared"));
+                let response = if path == "/images" {
+                    assert_eq!(body["prompt"], "Draw a pear");
+                    json!({"data":[{"b64_json":image}]}).to_string()
+                } else {
+                    format!(
+                        "data: {}\n\ndata: [DONE]\n\n",
+                        json!({"choices":[{"delta":{"content":"A pear."}}]})
+                    )
+                };
+                req.respond(tiny_http::Response::from_string(response))
+                    .unwrap();
+            }
+        });
+        let mut p = json!({"id":"OpenRouter","model":"fixture","imageModel":"fixture-image","cap":2,"enabled":false});
+        s.put("provider", &p).unwrap();
+        assert!(conversation(&s, &p, "Answer", &json!("pear"), &mut |_| {}).is_err());
+        p["conversation"] = json!(true);
+        s.put("provider", &p).unwrap();
+        assert_eq!(
+            conversation(&s, &p, "Answer", &json!("pear"), &mut |_| {}).unwrap(),
+            "A pear."
+        );
+        let sheet = s.get("current").unwrap();
+        let turn = id();
+        s.put("chat",&json!({"id":sheet,"networkClosed":false,"turns":[{"id":turn,"question":"Draw a pear","imagePrompt":"Draw a pear"},{"id":id(),"question":"unshared"}]})).unwrap();
+        assert!(render_image(&s, &json!({"sheet":sheet,"turn":turn,"prompt":"changed"})).is_err());
+        let args = json!({"sheet":sheet,"turn":turn,"prompt":"Draw a pear"});
+        render_image(&s, &args).unwrap();
+        render_image(&s, &args).unwrap();
+        assert!(image_data(&s, &json!({"id":turn}))
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .ends_with(image));
+        assert!(conversation(&s, &p, "Answer", &json!("third request"), &mut |_| {}).is_err());
+        worker.join().unwrap();
+        ROUTER_FIXTURE.with(|r| *r.borrow_mut() = None);
+    }
 }

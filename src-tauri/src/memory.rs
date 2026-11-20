@@ -447,30 +447,61 @@ pub fn core_notes(s: &Store, hosted: bool) -> Res<Vec<Value>> {
         })
         .collect())
 }
-fn holdout(s: &Store, after: &str) -> Res<Vec<Value>> {
+// Only reuse network-enabled sheets for hosted background work. A file's
+// permission is per request, so sheets containing attachments stay local here.
+const HOSTED_SHEET: &str = "
+    json_extract(c.v,'$.private')=0 AND json_extract(c.v,'$.networkClosed')=0
+    AND EXISTS (SELECT 1 FROM docs p WHERE p.kind='sheet' AND p.id=c.id AND coalesce(json_extract(p.v,'$.private'),0)=0)
+    AND NOT EXISTS (SELECT 1 FROM json_each(c.v,'$.turns') f WHERE json_array_length(f.value,'$.files')>0 OR json_extract(f.value,'$.oneQuestion')=1)";
+
+fn dream_model(s: &Store, primary: &Value) -> Value {
+    if crate::plan::selected(primary) {
+        crate::conversation::local_model(s).unwrap_or_else(|| primary.clone())
+    } else {
+        primary.clone()
+    }
+}
+
+fn dream_shareable(n: &Value) -> bool {
+    n["private"] != true
+        && n["restricted"] != true
+        && crate::plan::cloud_usable(n)
+        && n["text"].is_string()
+        && crate::plan::clean(&n["text"]).is_ok()
+}
+
+fn holdout(s: &Store, after: &str, hosted: bool) -> Res<Vec<Value>> {
     let conn = s.db.lock().unwrap();
-    let mut stmt=conn.prepare("SELECT json_extract(old.value,'$.reply'),json_extract(t.value,'$.question'),json_extract(t.value,'$.id') FROM docs c JOIN json_each(c.v,'$.turns') t JOIN json_each(c.v,'$.turns') old ON old.key=t.key-1 WHERE c.kind='chat' AND julianday(json_extract(old.value,'$.at'))>julianday(?) AND julianday(json_extract(t.value,'$.at'))>julianday('now','-60 days') ORDER BY julianday(json_extract(t.value,'$.at')) DESC LIMIT 3").msg()?;
-    let it=stmt.query_map([after],|r|Ok(json!({"situation":r.get::<_,String>(0)?,"actual":r.get::<_,String>(1)?,"id":r.get::<_,String>(2)?}))).msg()?;
-    it.collect::<rusqlite::Result<_>>().msg()
+    let sql = format!("SELECT json_extract(old.value,'$.reply'), json_extract(t.value,'$.question'), json_extract(t.value,'$.id')
+        FROM docs c JOIN json_each(c.v,'$.turns') t JOIN json_each(c.v,'$.turns') old ON old.key=t.key-1
+        WHERE c.kind='chat' AND julianday(json_extract(old.value,'$.at'))>julianday(?1)
+        AND julianday(json_extract(t.value,'$.at'))>julianday('now','-60 days')
+        AND (?2=0 OR ({HOSTED_SHEET})) ORDER BY julianday(json_extract(t.value,'$.at')) DESC LIMIT 12");
+    let mut stmt = conn.prepare(&sql).msg()?;
+    let mut cases = Vec::new();
+    let rows = stmt.query_map(rusqlite::params![after,hosted], |r| Ok(json!({"situation":r.get::<_,String>(0)?,"actual":r.get::<_,String>(1)?,"id":r.get::<_,String>(2)?}))).msg()?;
+    for row in rows {
+        let case = row.msg()?;
+        if !hosted || crate::plan::clean(&case).is_ok() {
+            cases.push(case);
+        }
+        if cases.len() == 3 {
+            break;
+        }
+    }
+    Ok(cases)
 }
 fn replay(
     s: &Store,
-    primary: &Value,
+    model: &Value,
     baseline: &[Value],
     candidate: &[Value],
     cases: &[Value],
     idle: impl Fn() -> bool,
 ) -> Res<Option<[u32; 2]>> {
-    let local;
-    let model = if crate::plan::selected(primary) {
-        let Some(found) = crate::conversation::local_model(s) else {
-            return Ok(None);
-        };
-        local = found;
-        &local
-    } else {
-        primary
-    };
+    if crate::plan::selected(model) && !baseline.iter().chain(candidate).all(dream_shareable) {
+        return Ok(None);
+    }
     let mut scores = [0u32; 2];
     for case in cases {
         let situation = case["situation"].as_str().unwrap_or("");
@@ -492,6 +523,8 @@ pub fn dream_proposal(s: &Store, primary: &Value) -> Res<()> {
     if primary.is_null() || s.get("autoStamp")? != true {
         return Ok(());
     }
+    let model = dream_model(s, primary);
+    let hosted = crate::plan::selected(&model);
     let current = crate::scroll::approved(s)?;
     for proposal in s.list("proposal")? {
         if proposal["section"] != "writing"
@@ -506,7 +539,7 @@ pub fn dream_proposal(s: &Store, primary: &Value) -> Res<()> {
             .chain(proposal["lastSeen"].as_str())
             .max()
             .unwrap_or("");
-        let cases = holdout(s, after)?;
+        let cases = holdout(s, after, hosted)?;
         if cases.len() < 2 {
             continue;
         }
@@ -517,7 +550,7 @@ pub fn dream_proposal(s: &Store, primary: &Value) -> Res<()> {
         }
         let mut candidate = current.clone();
         candidate.push(proposal.clone());
-        let Some(scores) = replay(s, primary, &current, &candidate, &cases, crate::local::idle)?
+        let Some(scores) = replay(s, &model, &current, &candidate, &cases, crate::local::idle)?
         else {
             return Ok(());
         };
@@ -545,17 +578,14 @@ pub fn dream_transcript(s: &Store, primary: &Value, quiet: impl Fn() -> bool + C
     if primary.is_null() || !quiet() {
         return Ok(());
     }
-    let local = if crate::plan::selected(primary) {
-        crate::conversation::local_model(s)
-    } else {
-        Some(primary.clone())
-    };
-    let Some(model) = local else { return Ok(()) };
+    let model = dream_model(s, primary);
+    let hosted = crate::plan::selected(&model);
     let sources: Vec<(String, String, String, String, bool)> = {
         let db = s.db.lock().unwrap();
-        let mut st=db.prepare("SELECT c.id,json_extract(t.value,'$.id'),json_extract(t.value,'$.question'),json_extract(t.value,'$.at'),coalesce(json_extract(c.v,'$.networkClosed'),0) FROM docs c JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND json_extract(t.value,'$.at') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kv WHERE k='examined/'||json_extract(t.value,'$.id')) AND julianday(json_extract(t.value,'$.at')) < julianday('now','-1 hour') ORDER BY julianday(json_extract(t.value,'$.at')) LIMIT 5").msg()?;
+        let sql=format!("SELECT c.id,json_extract(t.value,'$.id'),json_extract(t.value,'$.question'),json_extract(t.value,'$.at'),coalesce(json_extract(c.v,'$.networkClosed'),0) FROM docs c JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND (?1=0 OR ({HOSTED_SHEET})) AND json_extract(t.value,'$.at') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM kv WHERE k='examined/'||json_extract(t.value,'$.id')) AND julianday(json_extract(t.value,'$.at')) < julianday('now','-1 hour') ORDER BY julianday(json_extract(t.value,'$.at')) LIMIT 5");
+        let mut st = db.prepare(&sql).msg()?;
         let rows = st
-            .query_map([], |r| {
+            .query_map([hosted], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })
             .msg()?;
@@ -566,6 +596,9 @@ pub fn dream_transcript(s: &Store, primary: &Value, quiet: impl Fn() -> bool + C
             return Ok(());
         }
         let key = format!("examined/{turn}");
+        if hosted && crate::plan::clean(&json!(text)).is_err() {
+            continue;
+        }
         if text.trim_end().ends_with('?')
             || crate::sources::audit(&text).is_none()
             || timeline(s)?
@@ -575,12 +608,12 @@ pub fn dream_transcript(s: &Store, primary: &Value, quiet: impl Fn() -> bool + C
             s.set(&key, &json!(true))?;
             continue;
         }
-        let cases = holdout(s, &at)?;
+        let cases = holdout(s, &at, hosted)?;
         if cases.len() < 2 {
             continue;
         }
         let schema = json!({"type":"object","properties":{"quote":{"type":"string"},"topic":{"type":"string"},"scope":{"type":"string","enum":["person","project","preference","none"]}},"required":["quote","topic","scope"],"additionalProperties":false});
-        let raw=crate::plan::think(s,&model,"local dream","Find one explicit, lasting statement about this person's life or preferences. Quote their exact words, without interpretation. Return none if uncertain, hypothetical, or a one-off. Topic is a short subject name.",&json!({"words":text}),160,Some(&schema))?;
+        let raw=crate::plan::think(s,&model,"dream","Find one explicit, lasting statement about this person's life or preferences. Quote their exact words, without interpretation. Return none if uncertain, hypothetical, or a one-off. Topic is a short subject name.",&json!({"words":text}),160,Some(&schema))?;
         let result: Value = serde_json::from_str(&raw).msg()?;
         let quote = result["quote"].as_str().unwrap_or("").trim();
         let topic = result["topic"].as_str().unwrap_or("").trim();
@@ -596,13 +629,13 @@ pub fn dream_transcript(s: &Store, primary: &Value, quiet: impl Fn() -> bool + C
             s.set(&key, &json!(true))?;
             continue;
         }
-        let baseline = core_notes(s, false)?;
+        let baseline = core_notes(s, hosted)?;
         let until = if scope == "project" {
             crate::scroll::instant(&at).map(|d| (d + chrono::Duration::days(35)).to_rfc3339())
         } else {
             None
         };
-        let note = json!({"id":&hash(&turn)[..32],"sheet":sheet,"topic":format!("{scope}/{topic}"),"value":quote,"text":quote,"learnedAt":now(),"validFrom":at,"validUntil":until,"private":true,"restricted":restricted,"scale":if scope=="project"{"phase"}else{"trait"},"fromDream":true,"dates":[]});
+        let note = json!({"id":&hash(&turn)[..32],"sheet":sheet,"topic":format!("{scope}/{topic}"),"value":quote,"text":quote,"learnedAt":now(),"validFrom":at,"validUntil":until,"private":!hosted,"restricted":restricted,"scale":if scope=="project"{"phase"}else{"trait"},"fromDream":true,"dates":[]});
         let mut candidate = baseline.clone();
         candidate.push(note.clone());
         let Some(grades) = replay(s, &model, &baseline, &candidate, &cases, quiet)? else {
@@ -611,7 +644,7 @@ pub fn dream_transcript(s: &Store, primary: &Value, quiet: impl Fn() -> bool + C
         let Ok(_edit) = s.edit.try_lock() else {
             return Ok(());
         };
-        if core_notes(s, false)? != baseline
+        if core_notes(s, hosted)? != baseline
             || s.get(&format!("forgotNote/{}", hash(quote)))? == true
         {
             return Ok(());
@@ -637,19 +670,15 @@ pub fn audit_note(s: &Store, primary: &Value, quiet: impl Fn() -> bool) -> Res<(
     if !quiet() || primary.is_null() || s.get("auditedNotesDay")? == today {
         return Ok(());
     }
-    let model = if crate::plan::selected(primary) {
-        crate::conversation::local_model(s)
-    } else {
-        Some(primary.clone())
-    };
-    let Some(model) = model else { return Ok(()) };
+    let model = dream_model(s, primary);
+    let hosted = crate::plan::selected(&model);
     let mut notes = timeline(s)?;
-    notes.retain(current);
+    notes.retain(|n| current(n) && (!hosted || dream_shareable(n)));
     for note in notes.iter().take(20) {
         let after = note["learnedAt"].as_str().and_then(crate::scroll::instant);
         let words = note["text"].as_str().unwrap_or("");
         let terms = crate::conversation::words(words);
-        let hits = desk_tools::recall(s, words, false, chrono::Utc::now(), "")?;
+        let hits = desk_tools::recall(s, words, hosted, chrono::Utc::now(), "")?;
         let later: Vec<_> = hits
             .into_iter()
             .filter(|p| {
@@ -708,7 +737,8 @@ pub fn dream_core(s: &Store, primary: &Value, idle: impl Fn() -> bool) -> Res<()
         .filter_map(|v| v["learnedAt"].as_str())
         .max()
         .unwrap_or("");
-    let cases = holdout(s, cutoff)?;
+    let model = dream_model(s, primary);
+    let cases = holdout(s, cutoff, crate::plan::selected(&model))?;
     if cases.len() < 2 {
         return Ok(());
     }
@@ -716,7 +746,7 @@ pub fn dream_core(s: &Store, primary: &Value, idle: impl Fn() -> bool) -> Res<()
     if s.get("lastDreamTrial")?["stamp"] == stamp {
         return Ok(());
     }
-    let Some(scores) = replay(s, primary, &baseline, &candidate, &cases, idle)? else {
+    let Some(scores) = replay(s, &model, &baseline, &candidate, &cases, idle)? else {
         return Ok(());
     };
     let Ok(_edit) = s.edit.try_lock() else {
@@ -738,6 +768,43 @@ pub fn dream_core(s: &Store, primary: &Value, idle: impl Fn() -> bool) -> Res<()
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    #[test]
+    fn hosted_dreams_reuse_only_public_sheet_turns_and_unrestricted_notes() {
+        let folder = tempfile::tempdir().unwrap();
+        let store = Store::with_key(folder.path().into(), &[7; 32]).unwrap();
+        let stamp = now();
+        for (id, private, file) in [
+            ("share", false, false),
+            ("local", true, false),
+            ("attachment", false, true),
+        ] {
+            store
+                .put("sheet", &json!({"id":id,"private":private}))
+                .unwrap();
+            let files = if file {
+                json!([{"name":"schedule.pdf"}])
+            } else {
+                json!([])
+            };
+            store.put("chat", &json!({"id":id,"private":false,"networkClosed":false,"turns":[
+                {"id":"old","reply":"Would you prefer a shorter invitation?","at":stamp,"files":files},
+                {"id":id,"question":"Yes, just one paragraph.","at":stamp}
+            ]})).unwrap();
+        }
+        assert_eq!(holdout(&store, "2000-01-01", false).unwrap().len(), 3);
+        let public = holdout(&store, "2000-01-01", true).unwrap();
+        assert_eq!(public.len(), 1);
+        assert_eq!(public[0]["id"], "share");
+        assert!(!dream_shareable(
+            &json!({"private":true,"text":"I choose short invitations."})
+        ));
+        assert!(!dream_shareable(
+            &json!({"restricted":true,"text":"I choose short invitations."})
+        ));
+        assert!(dream_shareable(
+            &json!({"text":"I choose short invitations."})
+        ));
+    }
     #[test]
     fn corrections_close_the_old_fact_and_only_distinct_days_promote() {
         let folder = tempfile::tempdir().unwrap();

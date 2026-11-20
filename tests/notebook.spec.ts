@@ -3,7 +3,9 @@ import {execFileSync, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
 import {
+  copyFile,
   mkdir,
+  truncate,
   mkdtemp,
   readFile,
   rename,
@@ -11,8 +13,9 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import {constants} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {basename, dirname, join} from 'node:path';
 async function fixtureNotebook(
   agents = false,
   datedHistory?: {markdown: string; scores: object[]},
@@ -1207,6 +1210,17 @@ test('resume the publisher’s real GGUF download and seal a decision without an
         [1, 1],
       ],
     });
+    // A verified local copy can seed the prefix on repeat runs. Both continuations
+    // still use the publisher, and the runtime verifies the entire finished file.
+    let startingBytes = 0;
+    const seed = process.env.SUMI_TEST_GGUF_PREFIX;
+    if (seed && basename(seed) === basename(partial, '.partial')) {
+      const bytes = (await stat(seed)).size;
+      startingBytes = Math.max(0, bytes - 96 * 1024 * 1024);
+      await mkdir(dirname(partial), {recursive: true});
+      await copyFile(seed, partial, constants.COPYFILE_FICLONE);
+      await truncate(partial, startingBytes);
+    }
     first.core.stdin.write(
       JSON.stringify({operation: 'downloadBundled', args: {}}) + '\n',
     );
@@ -1215,7 +1229,7 @@ test('resume the publisher’s real GGUF download and seal a decision without an
         timeout: 120000,
         intervals: [100],
       })
-      .toBeGreaterThan(4_000_000);
+      .toBeGreaterThan(startingBytes + 4_000_000);
     first.core.kill('SIGTERM');
     await closed(first.core);
     const offset = (await stat(partial)).size;

@@ -452,7 +452,10 @@ mod tests {
                 if !grade {
                     assert!(!input.contains("unseenanswer"));
                 }
-                let reply = if instructions.starts_with("Read a person's correction.") {
+                let reply = if instructions.starts_with("Answer the one question directly.") {
+                    assert_eq!(input, "Explain the word medication.");
+                    "It means medicine."
+                } else if instructions.starts_with("Read a person's correction.") {
                     assert!(input.contains("margins for notes"));
                     "I prefer wide margins for handwritten notes."
                 } else if instructions.starts_with("Answer the situation") {
@@ -574,6 +577,15 @@ mod tests {
         let turn = s.doc("chat", &conversation).unwrap()["turns"][0].clone();
         assert_eq!(turn["reply"], "Begin with a small sketch.");
         assert_eq!(turn["runtime"], "ChatGPT");
+        let sensitive = s.new_sheet().unwrap();
+        let mut args = json!({"sheet":sensitive,"turn":id(),"text":"Explain the word medication."});
+        let preview = app::action(&s, "askSheet", &args).unwrap();
+        assert_eq!(preview["reviewQuestion"], args["text"]);
+        assert!(s.optional_doc("chat", &sensitive).unwrap().is_none());
+        args["approvedQuestion"] = preview["reviewQuestion"].clone();
+        app::action(&s, "askSheet", &args).unwrap();
+        assert_eq!(s.doc("chat", &sensitive).unwrap()["networkClosed"], true);
+
         s.new_sheet().unwrap();
         let sheet = s.get("current").unwrap();
         s.save_sheet(sheet.as_str().unwrap(), "Should I draw a draft now?")
