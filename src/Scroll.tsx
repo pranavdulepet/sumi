@@ -1,5 +1,7 @@
 import {useEffect, useState} from 'react';
 import {call, type Action, type Row, sections, day} from './api';
+import {Methods} from './Methods';
+import {Page} from './Page';
 import {Stroke, Enso} from './Ink';
 function Entry({v, act, readonly}: {v: Row; act: Action; readonly: boolean}) {
   const [expanded, show] = useState(false),
@@ -16,13 +18,16 @@ function Entry({v, act, readonly}: {v: Row; act: Action; readonly: boolean}) {
         >
           {v.text}
         </button>
-        <Enso confidence={v.currentConfidence??v.confidence} size={27} />
+        {(v.currentConfidence ?? v.confidence) >= 0.5 && (
+          <Enso confidence={v.currentConfidence ?? v.confidence} size={27} />
+        )}
       </div>
       {expanded && (
         <div className="evidence">
           <p className="small">
             {v.authored ? 'Written by you' : `Evidence on ${v.days} days`} ·{' '}
-            {Math.round(100 * (v.currentConfidence??v.confidence))}% confidence
+            {Math.round(100 * (v.currentConfidence ?? v.confidence))}%
+            confidence
           </p>
           {v.evidence?.map((e: Row) => (
             <blockquote key={e.id}>
@@ -79,7 +84,15 @@ function Entry({v, act, readonly}: {v: Row; act: Action; readonly: boolean}) {
     </article>
   );
 }
-export function Scroll({data, act}: {data: Row; act: Action}) {
+export function Scroll({
+  data,
+  act,
+  teach,
+}: {
+  data: Row;
+  act: Action;
+  teach: () => void;
+}) {
   const [version, select] = useState(''),
     [past, setPast] = useState<Row[]>([]),
     [adding, add] = useState(false),
@@ -98,17 +111,20 @@ export function Scroll({data, act}: {data: Row; act: Action}) {
     };
   }, [version]);
   return (
-    <main className="page">
-      <div className="folio">巻 · Your notebook</div>
-      <div className="heading-line">
-        <h1>The Scroll</h1>
-        {!version && (
-          <button className="quiet small" onClick={() => add(!adding)}>
-            {adding ? 'Cancel' : '＋ Write an entry'}
-          </button>
-        )}
-      </div>
-      {versions.length > 0 && (
+    <Page
+      name="Scroll"
+      margin={
+        <>
+          <button onClick={teach}>Teach a correction</button>
+          {!version && (
+            <button onClick={() => add(!adding)}>
+              {adding ? 'Cancel' : 'Write an entry'}
+            </button>
+          )}
+        </>
+      }
+    >
+      {versions.length > 1 && (
         <label className="timeline">
           <span>{day(versions[0].date)}</span>
           <input
@@ -167,10 +183,10 @@ export function Scroll({data, act}: {data: Row; act: Action}) {
                 <p className="entry-title">{v.text}</p>
                 <button
                   className="seal-button"
-                  aria-label="Stamp proposal"
+                  aria-label="Sounds like me"
                   onClick={() => act('stamp', {id: v.id})}
                 >
-                  <Stroke points={data.mark} />
+                  <Stroke points={data.mark} /> Sounds like me
                 </button>
               </div>
               <details>
@@ -188,7 +204,7 @@ export function Scroll({data, act}: {data: Row; act: Action}) {
                 className="quiet small"
                 onClick={() => act('dismiss', {id: v.id})}
               >
-                Dismiss
+                Not me
               </button>
             </article>
           ))}
@@ -219,6 +235,7 @@ export function Scroll({data, act}: {data: Row; act: Action}) {
           </p>
         </div>
       )}
-    </main>
+      {!version && <Methods skills={data.skills} act={act} />}
+    </Page>
   );
 }

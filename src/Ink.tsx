@@ -1,48 +1,26 @@
 import {useRef, useState} from 'react';
 export type Point = [number, number];
 export function Enso({
-  confidence = 0.86,
+  confidence = 1,
   size = 36,
 }: {
   confidence?: number;
   size?: number;
 }) {
   return (
-    <svg
+    <span
       aria-hidden="true"
-      width={size}
-      height={size}
-      viewBox="0 0 100 100"
-      fill="none"
-    >
-      <g
-        transform="rotate(-79 50 50)"
-        stroke="currentColor"
-        strokeLinecap="round"
-      >
-        <circle
-          cx="50"
-          cy="50"
-          r="39"
-          strokeWidth="5.1"
-          pathLength="100"
-          strokeDasharray={`${Math.max(4, confidence * 98)} 100`}
-        />
-        <circle
-          cx="49"
-          cy="51"
-          r="40"
-          strokeWidth="1.5"
-          pathLength="100"
-          strokeDasharray={`${confidence * 92} 100`}
-        />
-        <path d="M90 50 C91 73 72 90 52 90" strokeWidth="2.8" />
-      </g>
-    </svg>
+      className="brush-mark"
+      style={{
+        width: size,
+        height: size,
+        backgroundImage: `conic-gradient(from -60deg, currentColor 0 ${confidence * 100}%, transparent ${confidence * 100}% 100%)`,
+      }}
+    />
   );
 }
 export function Stroke({
-  points,
+  points = [],
   className = '',
 }: {
   points: Point[];

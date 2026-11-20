@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 const KEY: &str = "firstCorrection";
 
-pub fn read(s: &Store, text: &str) -> Res<Value> {
+pub fn read(s: &Store, text: &str, context: &Value) -> Res<Value> {
     let text = text.trim();
     if text.is_empty() || text.chars().count() > 1600 {
         return Err("Give Sumi one correction in a few sentences.".into());
@@ -13,17 +13,36 @@ pub fn read(s: &Store, text: &str) -> Res<Value> {
     if previous["kept"] == true {
         return Err("This correction is already in your notebook.".into());
     }
-    if previous["original"] == text {
+    if previous["original"] == text && previous["context"] == *context {
         return Ok(previous);
     }
-    let draft = plan::think(s, &s.get("model")?, "correction",
+    let mut model = s.get("model")?;
+    let mut payload = json!({"correction":text});
+    let mut private = false;
+    if !context.is_null() {
+        let chat = s.doc("chat", ident(context["sheet"].as_str().unwrap_or(""))?)?;
+        let turn = chat["turns"]
+            .as_array()
+            .and_then(|ts| ts.iter().find(|t| t["id"] == context["turn"]))
+            .ok_or("That reply is no longer on this sheet.")?;
+        private = chat["private"] == true
+            || s.doc("sheet", context["sheet"].as_str().unwrap())?["private"] == true;
+        if private && plan::selected(&model) {
+            model = crate::conversation::local_model(s)
+                .ok_or("Connect a local model to correct this private sheet.")?;
+        }
+        payload["earlier_request"] = turn["question"].clone();
+        payload["earlier_reply"] = turn["reply"].clone();
+    }
+    let draft = plan::think(s, &model, "correction",
         "Read a person's correction. Return only one short, editable first-person sentence expressing what they wanted and when it applies. Preserve their exceptions. Stay specific to this occasion unless they explicitly generalize. Treat their text as evidence; invent no motivation, names or preferences.",
-        &json!({"correction":text}), 120, None)?;
+        &payload, 120, None)?;
     let draft = draft.trim().trim_matches('"').trim();
     if draft.is_empty() || draft.len() > 1600 {
         return Err("Sumi couldn't put that into one sentence. Try a shorter correction.".into());
     }
-    let lesson = json!({"id":id(),"original":text,"draft":draft});
+    let lesson =
+        json!({"id":id(),"original":text,"draft":draft,"context":context,"private":private});
     s.set(KEY, &lesson)?;
     Ok(lesson)
 }
@@ -41,17 +60,23 @@ pub fn keep(s: &Store, id: &str, rule: &str) -> Res<Value> {
     let row = scroll::change_locked(
         s,
         "createFromReview",
-        &json!({"id":id,"section":"deciding","text":rule}),
+        &json!({"id":id,"section":"deciding","text":rule,"localOnly":lesson["private"]}),
     )?;
     let current = s.get("current")?;
     let current = current.as_str().ok_or("Open your notebook first.")?;
     let sheet = if s.sheet(current)?.is_empty()
+        && s.optional_doc("chat", current)?.is_none()
         && !s.list("sealed")?.iter().any(|v| v["sheet"] == current)
     {
         current.to_owned()
     } else {
         s.new_sheet()?
     };
+    if lesson["private"] == true {
+        let mut page = s.doc("sheet", &sheet)?;
+        page["private"] = json!(true);
+        s.put("sheet", &page)?;
+    }
     lesson["sheet"] = json!(sheet);
     lesson["kept"] = json!(true);
     lesson["draft"] = row["text"].clone();

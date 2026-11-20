@@ -217,7 +217,7 @@ fn score_incoming(s: &Store, model: &Value) -> Res<bool> {
     };
     let batch = {
         let c = s.db.lock().unwrap();
-        let mut st=c.prepare("SELECT m.id,m.source,m.stamp,m.situation FROM moments m WHERE m.split='train' AND julianday(m.stamp)>=julianday(?) AND m.source NOT IN ('desk','seal','guess-me') AND (?2=0 OR m.source!='messages') AND NOT EXISTS(SELECT 1 FROM docs d WHERE d.kind='prediction' AND d.id=m.id) ORDER BY m.stamp,m.id LIMIT 9").msg()?;
+        let mut st=c.prepare("SELECT m.id,m.source,m.stamp,m.situation FROM moments m WHERE m.split='train' AND julianday(m.stamp)>=julianday(?) AND m.source NOT IN ('desk','private-desk','seal','guess-me') AND (?2=0 OR m.source!='messages') AND NOT EXISTS(SELECT 1 FROM docs d WHERE d.kind='prediction' AND d.id=m.id) ORDER BY m.stamp,m.id LIMIT 9").msg()?;
         let rows = st
             .query_map(rusqlite::params![since, plan::selected(model)], |r| {
                 Ok((
@@ -412,12 +412,7 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
                             .take(limit)
                             .collect();
                             let permitted = cloud.as_ref().filter(|_| {
-                                v["source"] != "messages"
-                                    && !rules.iter().any(|r| {
-                                        r["sources"]
-                                            .as_array()
-                                            .is_some_and(|ss| ss.iter().any(|x| x == "messages"))
-                                    })
+                                plan::cloud_usable(v) && rules.iter().all(plan::cloud_usable)
                             });
                             let remote = (|| -> Res<Option<(String, String, Value)>> {
                                 let Some(p) = permitted else {
@@ -476,10 +471,7 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
                     let b = frozen["warm"].as_str().unwrap_or("");
                     let observed = sources::unseal(s, key)?;
                     let actual = observed.as_str();
-                    let local_only = v["source"] == "messages"
-                        || frozen["sources"]
-                            .as_array()
-                            .is_some_and(|ss| ss.iter().any(|x| x == "messages"));
+                    let local_only = !plan::cloud_usable(v) || !plan::cloud_usable(&frozen);
                     if plan::selected(&m) && local_only {
                         return Err("This reply can only be graded on your Mac.".into());
                     }

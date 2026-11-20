@@ -1,4 +1,5 @@
 import {useState} from 'react';
+import {Page} from './Page';
 import {BlindReadings} from './BlindReadings';
 import {type Row, type Action, day} from './api';
 export function Mirror({data, act}: {data: Row; act: Action}) {
@@ -52,13 +53,8 @@ export function Mirror({data, act}: {data: Row; act: Action}) {
   const quote = (value: string) =>
     '“' + value.trim().replace(/[.!?。！？]?$/u, end => end || '.') + '”';
   return (
-    <main className="page mirror">
-      <div className="folio">鏡 · The past seven days</div>
-      <h1>The Mirror</h1>
-      <div className="number">
-        {week.length ? Math.round((100 * wins) / week.length) + '%' : '—'}
-      </div>
-      <p>
+    <Page name="Mirror" margin={<time>The past seven days</time>}>
+      <p className="weekly-score">
         {week.length
           ? `${wins} of ${week.length} scored guesses matched.`
           : 'Your first scored guess will appear here.'}
@@ -283,77 +279,82 @@ export function Mirror({data, act}: {data: Row; act: Action}) {
             </p>
           </section>
         )}
-      <details>
-        <summary>How the score is measured</summary>
-        <p className="small">
-          Replies match when the intent is the same. Decisions use your verdict.
-          Each blind reading records its guesses before opening the observed
-          replies.
-        </p>
-        {brier !== null && (
-          <p>
-            Brier score · {brier.toFixed(3)} across {recorded.length}{' '}
-            predictions with probabilities.
+      <details className="audit">
+        <summary>Details</summary>
+        <details>
+          <summary>How the score is measured</summary>
+          <p className="small">
+            Replies match when the intent is the same. Decisions use your
+            verdict. Each blind reading records its guesses before opening the
+            observed replies.
           </p>
-        )}
-        {ghost.length > 0 && (
-          <p>
-            Ghost ink · {ghost.filter(v => v.grade === 3).length} accepted of{' '}
-            {ghost.length} shown.
+          {brier !== null && (
+            <p>
+              Brier score · {brier.toFixed(3)} across {recorded.length}{' '}
+              predictions with probabilities.
+            </p>
+          )}
+          {ghost.length > 0 && (
+            <p>
+              Ghost ink · {ghost.filter(v => v.grade === 3).length} accepted of{' '}
+              {ghost.length} shown.
+            </p>
+          )}
+        </details>
+        <details>
+          <summary>Where it ran</summary>
+          {data.catalogUpdated && (
+            <p>Model recommendations updated {day(data.catalogUpdated)}.</p>
+          )}
+          <p className="small">
+            {data.model?.runtime === 'ChatGPT' ? 'ChatGPT plan' : 'Local model'}{' '}
+            · {data.model?.name || 'Unselected'}
           </p>
-        )}
+          {data.routes.map((r: Row) => (
+            <p key={r.id}>
+              {day(r.date)} · {r.provider} · {r.job}
+            </p>
+          ))}
+          {data.tuning.map((r: Row) => (
+            <p key={r.id}>
+              {day(r.date)} · {r.cases} separate tuning cases · {r.selected}{' '}
+              prompt
+            </p>
+          ))}
+          {data.backgroundIssue && <p>{data.backgroundIssue}</p>}
+        </details>
+        <details>
+          <summary>Prediction record</summary>
+          {scores.length ? (
+            scores.slice(0, 60).map(v => (
+              <div className="record" key={v.id}>
+                <small>
+                  {day(v.date)} · {v.model || 'local'} · {v.scope}
+                </small>
+                <p>{v.guess || 'Ghost ink'}</p>
+                {v.category === 'ghost' && v.status === 'edited' && (
+                  <p>You wrote · {v.actual}</p>
+                )}
+                <small>
+                  {v.category === 'ghost'
+                    ? {
+                        shown: 'Shown',
+                        edited: 'You wrote your own ending',
+                        accepted: 'Accepted with Tab',
+                        dismissed: 'Dismissed',
+                      }[v.status as string] ||
+                      (v.grade === 3 ? 'Accepted with Tab' : 'Passed over')
+                    : ['Different', 'Partial', 'Same intent', 'Matched'][
+                        v.grade
+                      ]}
+                </small>
+              </div>
+            ))
+          ) : (
+            <p className="small">No scored predictions yet.</p>
+          )}
+        </details>
       </details>
-      <details>
-        <summary>Where it ran</summary>
-        {data.catalogUpdated && (
-          <p>Model recommendations updated {day(data.catalogUpdated)}.</p>
-        )}
-        <p className="small">
-          {data.model?.runtime === 'ChatGPT' ? 'ChatGPT plan' : 'Local model'} ·{' '}
-          {data.model?.name || 'Unselected'}
-        </p>
-        {data.routes.map((r: Row) => (
-          <p key={r.id}>
-            {day(r.date)} · {r.provider} · {r.job}
-          </p>
-        ))}
-        {data.tuning.map((r: Row) => (
-          <p key={r.id}>
-            {day(r.date)} · {r.cases} separate tuning cases · {r.selected}{' '}
-            prompt
-          </p>
-        ))}
-        {data.backgroundIssue && <p>{data.backgroundIssue}</p>}
-      </details>
-      <details>
-        <summary>Prediction record</summary>
-        {scores.length ? (
-          scores.slice(0, 60).map(v => (
-            <div className="record" key={v.id}>
-              <small>
-                {day(v.date)} · {v.model || 'local'} · {v.scope}
-              </small>
-              <p>{v.guess || 'Ghost ink'}</p>
-              {v.category === 'ghost' && v.status === 'edited' && (
-                <p>You wrote · {v.actual}</p>
-              )}
-              <small>
-                {v.category === 'ghost'
-                  ? {
-                      shown: 'Shown',
-                      edited: 'You wrote your own ending',
-                      accepted: 'Accepted with Tab',
-                      dismissed: 'Dismissed',
-                    }[v.status as string] ||
-                    (v.grade === 3 ? 'Accepted with Tab' : 'Passed over')
-                  : ['Different', 'Partial', 'Same intent', 'Matched'][v.grade]}
-              </small>
-            </div>
-          ))
-        ) : (
-          <p className="small">No scored predictions yet.</p>
-        )}
-      </details>
-    </main>
+    </Page>
   );
 }

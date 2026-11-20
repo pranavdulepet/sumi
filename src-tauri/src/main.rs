@@ -2,6 +2,7 @@ mod agent_link;
 mod app;
 mod bundled;
 mod catalog;
+mod conversation;
 mod correction;
 mod engine;
 mod exports;

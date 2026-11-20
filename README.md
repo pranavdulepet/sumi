@@ -1,72 +1,27 @@
-# Sumi 墨
+# Sumi
 
-Sumi is a private notebook for Apple Silicon Macs running macOS 14 or later. It records what it guessed before you tell it what you did. Over time, those comparisons give you evidence for deciding which beliefs to keep.
+Sumi is a personal notebook for conversations and decisions on Apple Silicon Macs. Ask a question, correct an answer in your own words, and choose which parts of that correction belong in the notebook. On the next related decision, you can open Sumi’s guess and see the sentence it read.
 
-[Watch the ten walkthroughs](docs/walkthroughs.md) · [Download for Mac](https://github.com/pranavdulepet/sumi/releases/latest/download/Sumi-macOS.zip)
+[Download the latest Mac release](https://github.com/pranavdulepet/sumi/releases/latest) · [Watch ten walkthroughs](docs/walkthroughs.md) · [Build the current branch](docs/development.md)
 
 ## Open your notebook
 
-Download **Sumi-macOS.zip** from the [latest release](https://github.com/pranavdulepet/sumi/releases/latest), unzip it, and move Sumi to Applications. Move the app to its lasting location before connecting agents. This build uses an ad-hoc signature. A rebuilt copy may trigger macOS Keychain authorization for the existing notebook. The release has no Apple notarization ticket.
+On macOS 14 or later, unzip the download and move Sumi to Applications. The downloadable app uses an ad-hoc signature. macOS may require approval to open it and to access an existing notebook’s Keychain item after upgrading.
 
-Draw your mark, then choose **Continue with ChatGPT**. Your notebook stays on this Mac. OpenAI receives the passages used for predictions, writing suggestions, grading and readings. Sumi asks your eligible ChatGPT plan to answer a short connection check before setup continues. Start with one correction from your own work. Sumi suggests a sentence you can edit and keep. Give it a related decision, record your choice, then open its sealed guess. You can see the sentence it consulted and mark whether it matched.
+Draw your mark. Choose **Continue with ChatGPT** to use your eligible plan, or **Think on this Mac instead** to use an installed model or download a verified one. Start with a real correction. Read the sentence Sumi learned, edit it, and keep it. Write down a related decision, record your choice, and open the seal to compare.
 
-Choose **Think on this Mac instead** for local thinking. Sumi checks an installed model or offers a local download. Open **Settings** with ⌘, to switch later, disconnect ChatGPT or manage other model connections.
+## At the Desk
 
-You can close the window during the first reading. If you quit the app, opening the notebook resumes the reading and keeps replies already scored.
+Write on a sheet and choose **Ask Sumi** or press ⌘Return. Continue on the same sheet for follow-ups. **Behind this reply** shows the model, any preferences supplied to it, and any skill it used. **Correct this reply** starts a correction with the exchange in view. **Sheets** (⌘O) opens your earlier conversations.
 
-The first reading prioritizes replies from the last 90 days. For a long coding session, it starts near the end so your latest decisions can reach the notebook first. Sumi picks up the rest while your Mac is idle and plugged in.
+When you repeat a way of working, Sumi can offer to keep it as a skill. Review its steps, give it a name, and stamp it. You can also choose **Make this a skill** on any reply. A future request that matches the skill’s name can use it automatically, or you can pick it in the margin. Edit or remove it in the Scroll.
 
-Later, open **Seal → Sources and readings** to add selected conversations. Choose **Request ChatGPT history** to open the export page. Sumi then watches Downloads for a completed chat archive. You can keep writing or quit Sumi while you wait. When the file arrives, choose whether to add it from the Desk or Sources. **Stop looking** cancels the request.
+Use **Places** or ⌘1–4 for the Desk, Scroll, Mirror and Seal. The Mirror counts scored guesses and lets you inspect each verdict. The Seal manages access for agents you connect. Open **Settings** with ⌘, to change your thinking setup, manage sources or bring in a chat export. Importing history is optional.
 
-When you import a ChatGPT archive, Sumi reads the conversation branch selected at export time. If the export omits the selection, Sumi reads the shared history up to the first fork. To replace a previously imported archive and its learned history, open **Seal**, remove that source, confirm **Forget source**, then import the archive again.
+## Models and files
 
-Write a real decision on the Desk and choose **Seal a guess**. Later, enter what you decided, open the seal, and judge the guess. The Mirror records your verdict. Open **Places** or press ⌘1–4 to move among the Desk, Scroll, Mirror and Seal. Option-Space opens a fresh sheet inside Sumi and works globally when macOS grants the shortcut. You can also choose **New Desk Sheet** from Sumi’s menu bar dot.
+In ChatGPT mode, the passages needed for an answer go to OpenAI. Sumi tries an available local model for short tasks such as rewriting or translation. Select **Keep this sheet local** before entering private material. A private sheet requires local inference for its replies. In local mode, all conversation turns use the local model. Other provider connections in Settings support specific background jobs.
 
-A margin note can bring back a goal you wrote or stamped when the paragraph you are editing mentions it. Dismissing the note gives you 24 hours of quiet. That goal stays out of the margin for a week after the first dismissal and a month after later ones. You can turn margin notes off in the Seal.
+Your notebook lives in `~/Sumi` by default. Drafts live in `desk/`, readable conversations in `desk/conversations/`, and editable skills in `scroll/skills/`. These Markdown files are readable by anyone with access to that folder. The encrypted database in `.sumi/` holds observations, conversation state and scores. macOS Keychain holds the database key and optional provider credentials. Keep your login Keychain with your notebook backup.
 
-When you return the next morning, the Desk opens a blank sheet. Earlier writing stays under **Sheets**. A waiting question names the agent that asked it. Open that line to answer in the Seal, where the agent can collect your reply.
-
-## Files you own
-
-The default notebook lives in `~/Sumi`. Sheets and Scroll entries are readable Markdown. Scroll changes have private local Git history. Machine observations, settings, scores and vectors live in an encrypted SQLCipher database under `.sumi`. The decryption key and optional provider credentials live in macOS Keychain. Reading the Markdown requires access to the user's files. FileVault protects the volume while locked. Keep your login Keychain with your notebook backup. The notebook path identifies its key.
-
-The Seal connects an agent after confirmation and writes one named MCP entry to its configuration. It starts with scoped read access. Some questions can be delegated after enough reviewed answers. Open the agent in the Seal for a line you can add to its instructions. The Seal counts how many automatic answers you reviewed and corrected. Its Repair connection control restores the launcher after an app move and preserves the agent’s permissions. Revoke access disables the credential and removes the launcher Sumi wrote. If another program already uses the name `sumi`, the Seal shows the separate name it registered. The HTTP transport listens on loopback. Installed agents use stdio.
-
-On a Mac without an installed model, the Qwen download shows its progress and resumes interrupted transfers on retry. Sumi checks the complete file against the publisher’s pinned SHA-256 digest before activating it.
-
-The app includes a local llama.cpp server. Model weights are separate. Selecting Ollama or LM Studio uses its local service. Hosted overnight reflection, optional blind prediction and Jev judgments require explicit configuration and a nonzero monthly request allowance. A request limit counts calls. Check the provider for currency limits.
-
-## Build and test
-
-The build uses the pinned Rust toolchain, Node.js 22.12 or later, npm, and the Xcode command line tools. The runtime setup verifies the pinned upstream llama.cpp archive. You can pass a previously downloaded archive as its first argument for offline setup.
-
-```sh
-scripts/prepare-runtime.sh
-npm ci
-npm run desktop
-```
-
-To make and verify the distributable bundle and the website download, run `scripts/release.sh`. The standalone landing page is `website/index.html`. It loads its fonts locally and works when opened on disk.
-
-```sh
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo build --manifest-path src-tauri/Cargo.toml
-npm run test:ui
-```
-
-The UI test uses Google Chrome, an installed Ollama llama3.2:3b model, a temporary notebook, and the debug build of the Rust core. Additional integration checks exercise local inference, the packaged command-line agent server and loopback HTTP. Build the release app before running them.
-
-```sh
-cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture --test-threads=1
-```
-
-To exercise the publisher download in the browser suite, set `SUMI_TEST_MODEL_DOWNLOAD=1`. This optional test downloads 1.12 GB from Hugging Face and removes its temporary notebook and weights afterward.
-
-The source is MIT licensed. Bundled fonts and inference runtime notices are under `licenses/`. See the [verification record](docs/requirements-review.md) for the evidence and outstanding criteria, and [Contributing](CONTRIBUTING.md) for feedback and code changes.
-
-
-## Publishing a signed model list
-
-Local builds use the included list of verified local model identifiers. A publisher may set `SUMI_CATALOG_URL` to its HTTPS manifest URL and `SUMI_CATALOG_PUBLIC_KEY` to its base64-encoded 32-byte Ed25519 public key at compile time. The envelope contains `payload` and `signature`, both standard base64. Sign the exact UTF-8 JSON payload bytes. The payload contains an integer `revision` above 1 and an ordered `models` array of Ollama `name` and byte-size `bytes` records. The app rejects invalid signatures and older revisions. Users can disable weekly checks. Models download only on request.
-
-The redistributable source archive is built by `python3 scripts/source-archive.py` and written to `release/Sumi-source.zip`. The release script runs this step automatically.
+The source is MIT licensed. Bundled assets and runtime notices are under [licenses](licenses/). See [Contributing](CONTRIBUTING.md) for feedback and code changes.

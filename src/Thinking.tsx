@@ -1,5 +1,7 @@
 import {useState} from 'react';
 import {type Action, type Row, call} from './api';
+import {Page} from './Page';
+import {Sources} from './Onboarding';
 import {Models} from './Models';
 import {Stroke} from './Ink';
 import {Providers} from './Providers';
@@ -173,12 +175,9 @@ export function ThinkingSettings({
   teach: () => void;
 }) {
   const plan = data.model?.runtime === 'ChatGPT';
+  const [busy, working] = useState(false);
   return (
-    <main className="page">
-      <div className="heading-line">
-        <h1>Settings</h1>
-        <button onClick={close}>Done</button>
-      </div>
+    <Page name="Settings" margin={<button onClick={close}>Done</button>}>
       <section>
         <h2>How Sumi thinks</h2>
         {data.model && <button onClick={teach}>Start with a correction</button>}
@@ -236,6 +235,63 @@ export function ThinkingSettings({
         )}
       </details>
       <Providers data={data} act={act} />
-    </main>
+      <section>
+        <details>
+          <summary>Sources and readings</summary>
+          <Sources
+            sources={data.sources}
+            request={data.requestedExport}
+            act={act}
+            confirmRemove
+          />
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={async () => {
+              working(true);
+              try {
+                await act('read');
+              } finally {
+                working(false);
+              }
+            }}
+          >
+            {busy ? 'Reading…' : 'Read selected sources'}
+          </button>
+        </details>
+        <details>
+          <summary>Learning preferences</summary>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={!!data.autoStamp}
+              onChange={e => act('autoStamp', {value: e.target.checked})}
+            />
+            Automatically stamp well-supported writing habits
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={!data.marginOff}
+              onChange={e => act('marginOff', {value: !e.target.checked})}
+            />
+            Show notes from my approved goals
+          </label>
+        </details>
+        <details>
+          <summary>Notebook on disk</summary>
+          <small>{data.root}</small>
+          {data.globalShortcutReady === false && (
+            <p className="small">
+              macOS could not register ⌥Space. Use New Desk Sheet in Sumi’s menu
+              bar menu, or press ⌥Space inside Sumi.
+            </p>
+          )}
+          <button onClick={() => act('openFolder')}>
+            Open notebook folder ↗
+          </button>
+        </details>
+      </section>
+    </Page>
   );
 }

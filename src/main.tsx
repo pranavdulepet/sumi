@@ -8,8 +8,6 @@ import React, {
 import {createRoot} from 'react-dom/client';
 import {listen} from '@tauri-apps/api/event';
 import '@fontsource/shippori-mincho/latin-400.css';
-import '@fontsource/zen-kaku-gothic-new/latin-400.css';
-import '@fontsource/zen-kaku-gothic-new/latin-500.css';
 import {Desk} from './Desk';
 import {FirstCorrection} from './FirstCorrection';
 import {Scroll} from './Scroll';
@@ -34,6 +32,7 @@ function Notebook() {
     [nav, menu] = useState(false),
     [settings, showSettings] = useState(false),
     [teaching, teach] = useState(false),
+    [replyToCorrect, selectReply] = useState<Row | null>(null),
     [focusWaiting, setFocusWaiting] = useState(false),
     [error, fail] = useState('');
   const queue = useRef(Promise.resolve()),
@@ -167,20 +166,27 @@ function Notebook() {
     window.addEventListener('keydown', f);
     return () => window.removeEventListener('keydown', f);
   }, [data?.setup]);
+  useEffect(() => {
+    const pts: number[][] = data?.mark || [];
+    const d = pts
+      .map(
+        ([x, y], i) =>
+          (i ? 'L' : 'M') + (x * 100).toFixed(1) + ' ' + (y * 100).toFixed(1),
+      )
+      .join(' ');
+    const ink =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path fill="none" stroke="white" stroke-width="6" stroke-linecap="round" d="' +
+      d +
+      '"/></svg>';
+    document.documentElement.style.setProperty(
+      '--signature',
+      'url("data:image/svg+xml,' + encodeURIComponent(ink) + '")',
+    );
+  }, [JSON.stringify(data?.mark)]);
   const lessonOpen = data?.setup && (teaching || !!data.firstCorrection);
   return (
     <>
-      <header
-        data-tauri-drag-region
-        className={data?.setup && !lessonOpen ? undefined : 'blank-binding'}
-      >
-        {data?.setup && !lessonOpen && (
-          <>
-            <span className="brand">墨</span>
-            <span>Sumi</span>
-          </>
-        )}
-      </header>
+      <header data-tauri-drag-region aria-hidden="true" />
       {error && (
         <div className="error" role="alert">
           {error}{' '}
@@ -208,11 +214,13 @@ function Notebook() {
       ) : lessonOpen ? (
         <main className="first-lesson">
           <FirstCorrection
+            reply={replyToCorrect}
             data={data}
             act={async (op, args) => {
               const value = await act(op, args);
               if (op === 'finish') {
                 teach(false);
+                selectReply(null);
                 navigate('Desk');
               }
               return value;
@@ -234,6 +242,11 @@ function Notebook() {
                 key={data.current}
                 data={data}
                 act={act}
+                teach={() => teach(true)}
+                correctReply={turn => {
+                  selectReply({...turn, sheet: data.current});
+                  teach(true);
+                }}
                 openSeal={() => navigate('Seal', true)}
                 record={record}
                 onSave={(id, text) =>
@@ -241,7 +254,7 @@ function Notebook() {
                 }
               />
             ) : place === 'Scroll' ? (
-              <Scroll data={data} act={act} />
+              <Scroll data={data} act={act} teach={() => teach(true)} />
             ) : place === 'Mirror' ? (
               <Mirror data={data} act={act} />
             ) : (

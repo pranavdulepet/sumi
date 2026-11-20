@@ -35,7 +35,15 @@ const pages = {
   },
 };
 
-export function FirstCorrection({data, act}: {data: Row; act: Action}) {
+export function FirstCorrection({
+  data,
+  act,
+  reply,
+}: {
+  data: Row;
+  act: Action;
+  reply?: Row | null;
+}) {
   const lesson = data.firstCorrection;
   const sealed = lesson?.sealed;
   const [revising, revise] = useState(false);
@@ -74,7 +82,10 @@ export function FirstCorrection({data, act}: {data: Row; act: Action}) {
   }
   async function advance() {
     if (learning) {
-      await act('readCorrection', {text: correction});
+      await act('readCorrection', {
+        text: correction,
+        context: reply ? {sheet: reply.sheet, turn: reply.id} : lesson?.context,
+      });
       edit(null);
       revise(false);
     } else if (reviewing) {
@@ -108,6 +119,12 @@ export function FirstCorrection({data, act}: {data: Row; act: Action}) {
     >
       <div className="correction-writing">
         <h1>{page.title}</h1>
+        {learning && reply && (
+          <blockquote className="quoted-reply">
+            <small>The reply you’re correcting</small>
+            {reply.reply.slice(0, 320)}
+          </blockquote>
+        )}
         {learning ? (
           <textarea
             aria-label="Your correction"

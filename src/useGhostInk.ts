@@ -124,7 +124,7 @@ export function useGhostInk(
         requests.current = requests.current
           .then(async () => {
             if (!live || !atEnd()) return;
-            const c = await call('ghost', {text});
+            const c = await call('ghost', {text, sheet});
             if (
               live &&
               c &&

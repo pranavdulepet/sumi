@@ -211,7 +211,9 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     });
     await page.getByRole('button', {name: 'Places'}).click();
     await page.getByRole('button', {name: /^Seal/}).click();
-    await expect(page.getByRole('heading', {name: 'The Seal'})).toBeVisible();
+    await expect(
+      page.getByRole('heading', {name: 'Seal', exact: true}),
+    ).toBeVisible();
     await page.reload();
     await expect(page.getByLabel('Desk sheet')).toHaveValue(/Should I keep/);
     const sheet = (await rpc('state')).current + '.md';
@@ -436,8 +438,10 @@ test('a requested export arrives after reopening and waits for consent', async (
     });
     await page.goto('/');
     await page.getByLabel('Desk sheet').fill('Keep this draft open.');
-    await expect(page.getByText('Saved', {exact: true})).toBeVisible();
-    await page.keyboard.press('Meta+4');
+    await expect
+      .poll(async () => (await notebook.rpc('state')).sheet)
+      .toBe('Keep this draft open.');
+    await page.keyboard.press('Meta+,');
     await page.getByText('Sources and readings', {exact: true}).click();
     await page.getByRole('button', {name: 'Request ChatGPT history ↗'}).click();
     await expect(
@@ -506,7 +510,7 @@ test('a requested export arrives after reopening and waits for consent', async (
     await expect(page.getByLabel('Desk sheet')).toHaveValue(
       'Keep this draft open.',
     );
-    await page.keyboard.press('Meta+4');
+    await page.keyboard.press('Meta+,');
     await page.getByText('Sources and readings', {exact: true}).click();
     await page.getByRole('button', {name: 'Read selected sources'}).click();
     await expect
@@ -731,7 +735,7 @@ test('Desk distinguishes accepted ink, a written alternative, dismissal and movi
     await expect(hint).toBeVisible();
     await sheet.press('ArrowLeft');
     await expect(hint).toHaveCount(0);
-    await sheet.press('End');
+    await sheet.press('Meta+ArrowRight');
     await expect(hint).toBeVisible();
     await sheet.press('Escape');
     await expect(hint).toHaveCount(0);
@@ -755,6 +759,7 @@ test('Desk distinguishes accepted ink, a written alternative, dismissal and movi
     hold = false;
     release!();
     await page.keyboard.press('Meta+3');
+    await page.getByText('Details', {exact: true}).click();
     await page.getByText('How the score is measured').click();
     await expect(
       page.getByText('Ghost ink · 1 accepted of 4 shown.'),
@@ -812,7 +817,7 @@ test('morning return preserves the old sheet and delivers a waiting agent its an
     const sheet = page.getByLabel('Desk sheet');
     const evening = 'I want to finish the sketch tomorrow.';
     await sheet.fill(evening);
-    await expect(page.getByText('Saved', {exact: true})).toBeVisible();
+    await expect.poll(async () => (await rpc('state')).sheet).toBe(evening);
     await page.keyboard.press('Meta+4');
     await page
       .getByRole('button', {name: 'Claude Code ＋', exact: true})
@@ -875,7 +880,9 @@ test('morning return preserves the old sheet and delivers a waiting agent its an
       }),
     ).toBeVisible();
     await sheet.fill('Start with the ink sketch.');
-    await expect(page.getByText('Saved', {exact: true})).toBeVisible();
+    await expect
+      .poll(async () => (await rpc('state')).sheet)
+      .toBe('Start with the ink sketch.');
     await page.reload();
     await expect(sheet).toHaveValue('Start with the ink sketch.');
     await page
@@ -1351,6 +1358,119 @@ test('the ChatGPT choice waits for a completed check and keeps advanced setup in
     await expect(page.getByRole('combobox')).toBeVisible();
     await page.getByRole('button', {name: 'Done'}).click();
     await expect(page.getByLabel('Desk sheet')).toBeVisible();
+  } finally {
+    core.stdin.end();
+  }
+});
+
+test('one sheet keeps a conversation, a correction, and a reusable method', async ({
+  page,
+}, info) => {
+  const {core, rpc, folder} = await fixtureNotebook();
+  try {
+    await rpc('mark', {
+      points: [
+        [0.14, 0.65],
+        [0.48, 0.23],
+        [0.7, 0.71],
+        [0.9, 0.47],
+      ],
+    });
+    await rpc('model', {name: 'llama3.2:3b', runtime: 'Ollama'});
+    await rpc('finish');
+    await rpc('create', {
+      section: 'deciding',
+      text: 'For museum visits, I pick one painting to spend time with.',
+    });
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    const field = page.getByLabel('Desk sheet');
+    async function ask(text: string, count: number) {
+      await field.fill(text);
+      await page.getByRole('button', {name: 'Ask Sumi', exact: true}).click();
+      await expect(page.locator('.exchange')).toHaveCount(count, {
+        timeout: 90000,
+      });
+      await expect(field).toHaveValue('');
+    }
+    await ask(
+      'Help me plan a museum visit. I have twenty minutes to see a painting called Blue Heron. Give me two short steps.',
+      1,
+    );
+    await page.getByText('Behind this reply', {exact: true}).click();
+    await expect(page.locator('.receipt')).toContainText('For museum visits');
+    await page.screenshot({path: info.outputPath('conversation.png')});
+    const first = await rpc('state');
+    expect(
+      await readFile(
+        join(folder, 'desk', 'conversations', first.current + '.md'),
+        'utf8',
+      ),
+    ).toContain(first.chat.turns[0].reply);
+    await page.reload();
+    await ask('Remind me of the name of the painting I mentioned.', 2);
+    expect((await rpc('state')).chat.turns[1].reply).toMatch(/Blue Heron/i);
+    await ask(
+      'Help me plan a museum visit again, this time with five minutes to look at the painting.',
+      3,
+    );
+    await page
+      .getByRole('button', {name: 'Keep this repeated method?'})
+      .click();
+    await expect(page.getByLabel('Steps to keep')).not.toHaveValue('', {
+      timeout: 90000,
+    });
+    await page.getByLabel('Name this skill').fill('Museum visit');
+    await page
+      .getByLabel('Steps to keep')
+      .fill(
+        'Choose a single painting. Give the visitor a question to think about while looking at it.',
+      );
+    await page.getByRole('button', {name: 'Keep this skill'}).click();
+    const skill = (await rpc('state')).skills[0];
+    expect(
+      await readFile(
+        join(folder, 'scroll', 'skills', skill.id + '.md'),
+        'utf8',
+      ),
+    ).toContain('Choose a single painting.');
+    await page.keyboard.press('Meta+2');
+    await page.getByText('Museum visit', {exact: true}).click();
+    await expect(
+      page.getByText('Choose a single painting.', {exact: false}).first(),
+    ).toBeVisible();
+    await page.screenshot({path: info.outputPath('scroll-skills.png')});
+    await page.keyboard.press('Meta+1');
+    await page.getByRole('button', {name: /^Sheets/}).click();
+    await page.getByRole('button', {name: /New sheet/}).click();
+    await expect(page.locator('.exchange')).toHaveCount(0);
+    await ask('Give me a plan for a museum visit tomorrow.', 1);
+    const next = await rpc('state');
+    expect(next.current).not.toBe(first.current);
+    expect(next.chat.turns[0].skill).toBe('Museum visit');
+    expect(next.chat.private).toBe(true);
+    await page.getByText('Behind this reply', {exact: true}).click();
+    await expect(page.locator('.receipt')).toContainText(
+      'Skill · Museum visit',
+    );
+    await page.emulateMedia({colorScheme: 'dark'});
+    await page.screenshot({path: info.outputPath('night-ink.png')});
+    await page.setViewportSize({width: 520, height: 600});
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(520);
+    await page.getByRole('button', {name: 'Correct this reply'}).click();
+    await expect(page.getByText('The reply you’re correcting')).toBeVisible();
+    await expect(page.getByLabel('Your correction')).toBeVisible();
   } finally {
     core.stdin.end();
   }

@@ -11,12 +11,18 @@ pub fn selected(model: &Value) -> bool {
 
 // Check provenance before callers reduce a Scroll entry to its text.
 pub fn usable(model: &Value, row: &Value) -> bool {
-    !selected(model)
-        || (row["source"] != "messages"
-            && row["section"] != "people"
-            && !row["sources"]
-                .as_array()
-                .is_some_and(|items| items.iter().any(|x| x == "messages")))
+    !selected(model) || cloud_usable(row)
+}
+
+pub fn cloud_usable(row: &Value) -> bool {
+    let private_source =
+        |value: &Value| matches!(value.as_str(), Some("messages" | "private-desk"));
+    row["localOnly"] != true
+        && row["section"] != "people"
+        && !private_source(&row["source"])
+        && !row["sources"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(private_source))
 }
 
 fn clean(value: &Value) -> Res<Value> {
@@ -348,6 +354,18 @@ mod tests {
                     );
                     assert!(!input.contains("narrow maybe"));
                     "Leave wide margins."
+                } else if instructions.starts_with("You are Sumi") {
+                    let payload: Value = serde_json::from_str(input).unwrap();
+                    assert!(payload["current_request"]
+                        .as_str()
+                        .unwrap()
+                        .contains("sketch"));
+                    assert!(payload["approved_preferences"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!("Sketch the idea first.")));
+                    assert_eq!(payload["conversation"], json!([]));
+                    "Begin with a small sketch."
                 } else if grade {
                     r#"{"grade":2,"reason":"Same action."}"#
                 } else if instructions.starts_with(include_str!("../../prompts/reflect.txt")) {
@@ -435,6 +453,17 @@ mod tests {
             ghost::suggest(&s, "My draft starts with").unwrap()["guess"],
             "my next sketch"
         );
+        let conversation = s.new_sheet().unwrap();
+        app::action(
+            &s,
+            "askSheet",
+            &json!({"sheet":conversation,"turn":id(),"text":"How should I sketch an idea?"}),
+        )
+        .unwrap();
+        let turn = s.doc("chat", &conversation).unwrap()["turns"][0].clone();
+        assert_eq!(turn["reply"], "Begin with a small sketch.");
+        assert_eq!(turn["runtime"], "ChatGPT");
+        s.new_sheet().unwrap();
         let sheet = s.get("current").unwrap();
         s.save_sheet(sheet.as_str().unwrap(), "Should I draw a draft now?")
             .unwrap();
@@ -472,6 +501,7 @@ mod tests {
             "grading",
             "reflection",
             "ghost ink",
+            "conversation",
             "correction",
         ] {
             assert!(

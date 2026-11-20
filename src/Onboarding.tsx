@@ -222,21 +222,12 @@ export function Onboarding({
     );
   return (
     <main className={'welcome stage-' + step}>
-      {step >= 2 && (
-        <div className="folio">
-          SUMI <span>／</span> FIRST READING
-        </div>
-      )}
       {step === 0 ? (
         <>
           <h1>
             A mark of your own<span className="punct">.</span>
           </h1>
-          <p className="lede">
-            One brushstroke becomes the seal you leave
-            <br />
-            on the things Sumi gets right.
-          </p>
+          <p className="lede">Draw one stroke. It becomes your seal.</p>
           <MarkPad
             save={async p => {
               await act('mark', {points: p});

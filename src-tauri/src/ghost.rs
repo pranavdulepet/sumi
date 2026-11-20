@@ -131,7 +131,8 @@ pub fn shown(s: &Store, a: &Value) -> Res<Value> {
     ) else {
         return Ok(Value::Null);
     };
-    let record = json!({"id":id,"sheet":sheet,"question":context,"guess":guess,"sources":c["sources"],"status":"shown","date":now(),"category":"ghost","model":c["model"].as_str().unwrap_or("local"),"scope":"live"});
+    let private = crate::conversation::private_sheet(s, sheet)?;
+    let record = json!({"localOnly":private,"id":id,"sheet":sheet,"question":context,"guess":guess,"sources":c["sources"],"status":"shown","date":now(),"category":"ghost","model":c["model"].as_str().unwrap_or("local"),"scope":"live"});
     s.db.lock()
         .unwrap()
         .execute(
@@ -177,9 +178,11 @@ pub fn resolve(s: &Store, a: &Value) -> Res<Value> {
                 .as_array()
                 .is_some_and(|src| src.is_empty())
     {
+        let private = record["localOnly"] == true
+            || crate::conversation::private_sheet(s, record["sheet"].as_str().unwrap())?;
         sources::add(
             s,
-            "desk",
+            if private { "private-desk" } else { "desk" },
             record["sheet"].as_str().unwrap(),
             record["date"].as_str().unwrap(),
             record["question"].as_str().unwrap(),

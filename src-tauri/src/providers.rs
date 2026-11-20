@@ -181,7 +181,7 @@ pub fn reflect(s: &Store, sys: &str, batch: &[Value]) -> Res<Option<String>> {
     // Only the narrow audited snippets reach this boundary. Messages and sensitive inferences are local.
     let mut clean = vec![];
     for v in batch {
-        if v["source"] == "messages" {
+        if !crate::plan::cloud_usable(v) {
             return Ok(None);
         }
         let mut item = json!({"id":v["id"],"date":v["date"]});
@@ -325,11 +325,7 @@ pub fn blind_job(
     }
     let mut snippets = vec![];
     for rule in rules.iter().take(8) {
-        if rule["section"] == "people"
-            || rule["sources"]
-                .as_array()
-                .is_some_and(|ss| ss.iter().any(|s| s == "messages"))
-        {
+        if !crate::plan::cloud_usable(rule) {
             return Ok(None);
         }
         let Some(t) = rule["text"].as_str().and_then(clean) else {

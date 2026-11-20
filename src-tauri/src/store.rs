@@ -198,8 +198,8 @@ impl Store {
             .msg()?;
         Ok(())
     }
-    pub fn doc(&self, kind: &str, k: &str) -> Res<Value> {
-        let s: String = self
+    pub fn optional_doc(&self, kind: &str, k: &str) -> Res<Option<Value>> {
+        let raw: Option<String> = self
             .db
             .lock()
             .unwrap()
@@ -208,8 +208,13 @@ impl Store {
                 params![kind, k],
                 |r| r.get(0),
             )
+            .optional()
             .msg()?;
-        serde_json::from_str(&s).msg()
+        raw.map(|v| serde_json::from_str(&v).msg()).transpose()
+    }
+    pub fn doc(&self, kind: &str, k: &str) -> Res<Value> {
+        self.optional_doc(kind, k)?
+            .ok_or_else(|| "The notebook record no longer exists.".into())
     }
     pub fn list(&self, kind: &str) -> Res<Vec<Value>> {
         let conn = self.db.lock().unwrap();
@@ -306,7 +311,7 @@ impl Store {
                     |r| r.get(0),
                 )
                 .msg()?;
-            let sealed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM docs WHERE kind='sealed' AND json_extract(v,'$.sheet')=?)",[&current],|r|r.get(0)).msg()?;
+            let sealed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM docs WHERE (kind='sealed' AND json_extract(v,'$.sheet')=?) OR (kind='chat' AND id=?1))",[&current],|r|r.get(0)).msg()?;
             if sealed || !self.sheet(&current)?.is_empty() {
                 self.create_sheet(&tx)?;
             }
