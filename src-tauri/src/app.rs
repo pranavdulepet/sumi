@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 pub fn setup(s: &Store) -> Res<()> {
     crate::forget::recover(s)?;
+    crate::conversation::recover(s)?;
     crate::agent_link::resume(s)?;
     let ours = !s.root.join(".git").exists();
     scroll::init(s)?;
@@ -32,6 +33,18 @@ fn desk_day(a: &Value) -> Res<chrono::NaiveDate> {
         None => Ok(chrono::Local::now().date_naive()),
     }
 }
+fn visible_seal(s: &Store, k: &str) -> Res<Option<Value>> {
+    Ok(s.list("sealed")?
+        .into_iter()
+        .find(|v| v["sheet"] == k)
+        .map(|mut v| {
+            if v["actual"].is_null() {
+                v.as_object_mut().unwrap().remove("guess");
+            }
+            v
+        }))
+}
+
 pub fn state(s: &Store) -> Res<Value> {
     let current = s.get("current")?;
     let k = current.as_str().ok_or("Missing current sheet.")?;
@@ -46,14 +59,17 @@ pub fn state(s: &Store) -> Res<Value> {
         .into_iter()
         .map(|v| json!({"id":v["id"],"date":v["date"],"reason":v["reason"]}))
         .collect::<Vec<_>>();
+    let titles = crate::conversation::titles(s)?;
     let sheets = s
         .list("sheet")?
         .into_iter()
         .map(|mut v| {
             let t = s.sheet(v["id"].as_str().unwrap_or("")).unwrap_or_default();
-            v["title"] = json!(t
-                .lines()
-                .find(|l| !l.trim().is_empty())
+            let first = titles
+                .get(v["id"].as_str().unwrap_or(""))
+                .map(String::as_str);
+            v["title"] = json!(first
+                .or_else(|| t.lines().find(|l| !l.trim().is_empty()))
                 .unwrap_or("Blank sheet")
                 .chars()
                 .take(60)
@@ -61,27 +77,49 @@ pub fn state(s: &Store) -> Res<Value> {
             v
         })
         .collect::<Vec<_>>();
-    let sealed = s
-        .list("sealed")?
-        .into_iter()
-        .find(|v| v["sheet"] == k)
-        .map(|mut v| {
-            if v["actual"].is_null() {
-                v.as_object_mut().unwrap().remove("guess");
+    let sealed = visible_seal(s, k)?;
+    let mut correction = s.get("firstCorrection")?;
+    if let Some(sheet) = correction["sheet"].as_str() {
+        let guess = visible_seal(s, sheet)?;
+        let question = s.sheet(sheet)?;
+        correction["sealed"] = json!(guess);
+        correction["question"] = json!(question);
+    }
+    let mut chat = s.optional_doc("chat", k)?;
+    if let Some(turns) = chat.as_mut().and_then(|c| c["turns"].as_array_mut()) {
+        for turn in turns {
+            if let Some(files) = turn["files"].as_array_mut() {
+                for file in files {
+                    if let Some(obj) = file.as_object_mut() {
+                        obj.remove("text");
+                    }
+                }
             }
-            v
-        });
+        }
+    }
     let scores = s.list("prediction")?;
     let entries = scroll::approved(s)?;
     let mut surprises = crate::mirror::reviews(&scores, &entries, chrono::Utc::now());
     surprises.truncate(3);
     Ok(
-        json!({"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
+        json!({"importOffer":s.get("importOffer")?,"notes":crate::memory::timeline(s)?,"autoListings":s.get("autoListings")?,"chat":chat,"skills":crate::conversation::skills(s)?,"firstCorrection":correction,"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"planUsage":s.get(&format!("budget/{}/ChatGPT",chrono::Utc::now().format("%Y-%m")))?, "providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
     )
 }
 pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
     match op {
         "state" => state(s),
+        "notebookMeasures" => crate::notebook_data::measures(s, desk_day(a)?),
+        "exportNotebook" => {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name("Sumi notebook.zip")
+                .save_file()
+            {
+                crate::notebook_data::export(s, &path)?;
+                Ok(json!(path))
+            } else {
+                Ok(Value::Null)
+            }
+        }
         "readingProgress" => s.get("readingProgress"),
         "firstReadingProgress" => crate::first_reading::progress(s),
         "nextChoice" => crate::seed::next(s),
@@ -97,7 +135,8 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             crate::providers::disconnect(s, text(a, "provider")?)?;
             Ok(Value::Null)
         }
-        "oauth" => crate::providers::oauth(s, text(a, "provider")?),
+        "oauth" => crate::providers::oauth(s, text(a, "provider")?, false),
+        "connectPlan" => crate::providers::oauth(s, "ChatGPT", true),
         "models" => Ok(json!(models::inventory())),
         "downloadBundled" => crate::weights::download(s),
         "modelDownloadStatus" => Ok(crate::weights::status(s)),
@@ -146,14 +185,101 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             s.set("mark", &a["points"])?;
             Ok(Value::Null)
         }
+        "sheetPrivacy" => {
+            let _lock = s.edit.lock().unwrap();
+            let mut sheet = s.doc("sheet", ident(text(a, "id")?)?)?;
+            sheet["private"] = json!(a["value"] == true);
+            s.put("sheet", &sheet)?;
+            Ok(Value::Null)
+        }
+        "retireEntry" => {
+            let _lock = s.edit.lock().unwrap();
+            let old = scroll::approved(s)?
+                .into_iter()
+                .find(|v| v["id"] == a["id"])
+                .ok_or("This memory was already removed.")?;
+            if old["text"] != a["text"] {
+                return Err("This memory has changed. Read its current wording first.".into());
+            }
+            scroll::change_locked(s, "delete", a)
+        }
+        "editNote" => crate::memory::revise(s, a, false),
+        "deleteNote" => crate::memory::revise(s, a, true),
+        "closeNote" => crate::memory::close(s, text(a, "id")?),
+        "autoListings" => {
+            s.set("autoListings", &json!(a["value"] == true))?;
+            Ok(Value::Null)
+        }
+        "searchWeb" => crate::conversation::confirm_search(s, a),
+        "openWebSource" => {
+            let chat = s.doc("chat", ident(text(a, "sheet")?)?)?;
+            let turn = chat["turns"]
+                .as_array()
+                .and_then(|ts| ts.iter().find(|t| t["id"] == a["turn"]))
+                .ok_or("Missing source.")?;
+            let url = turn["web"]["sources"]
+                .as_array()
+                .and_then(|v| v.get(a["index"].as_u64()? as usize))
+                .and_then(|v| v["url"].as_str())
+                .filter(|u| crate::web_search::public_url(u))
+                .ok_or("Missing web source.")?;
+            std::process::Command::new("/usr/bin/open")
+                .arg(url)
+                .spawn()
+                .msg()?;
+            Ok(Value::Null)
+        }
+        "dismissImportOffer" => {
+            s.set("importOffer", &json!(false))?;
+            Ok(Value::Null)
+        }
+        "checkItem" => crate::conversation::check_item(s, a),
+        "sheetImage" => crate::providers::image_data(s, a),
+        "renderImage" => crate::providers::render_image(s, a),
+        "readAttachment" => crate::attachments::read(a),
+        "regenerate" => crate::conversation::regenerate(s, a, &mut |_| {}),
+        "askSheet" => crate::conversation::ask(s, a),
+        "saveSkill" => {
+            let _edit = s.edit.lock().unwrap();
+            crate::conversation::save_skill(s, a)
+        }
+        "removeSkill" => {
+            let _edit = s.edit.lock().unwrap();
+            let key = ident(text(a, "id")?)?;
+            if let Some(v) = crate::conversation::skills(s)?
+                .iter()
+                .find(|v| v["id"] == key)
+            {
+                let path = s
+                    .root
+                    .join("scroll/skills")
+                    .join(v["file"].as_str().ok_or("Missing skill file.")?);
+                std::fs::remove_file(path).msg()?;
+            }
+            Ok(Value::Null)
+        }
+        "readCorrection" => crate::correction::read(s, text(a, "text")?, &a["context"]),
+        "keepCorrection" => crate::correction::keep(s, text(a, "id")?, text(a, "text")?),
+        "tryCorrection" => crate::correction::decide(s, text(a, "id")?, text(a, "question")?),
         "finish" => {
+            let _lock = s.edit.lock().unwrap();
             if s.get("onboardedAt")?.is_null() {
                 s.set("onboardedAt", &json!(now()))?;
             }
             if s.get("mark")?.is_null() {
                 return Err("Your seal needs a brushstroke.".into());
             }
+            let lesson = s.get("firstCorrection")?;
+            if lesson["kept"] == true
+                && lesson["sheet"] == s.get("current")?
+                && s.list("sealed")?
+                    .iter()
+                    .any(|v| v["sheet"] == lesson["sheet"] && !v["actual"].is_null())
+            {
+                s.new_sheet()?;
+            }
             s.set("onboarded", &json!(true))?;
+            s.set("firstCorrection", &Value::Null)?;
             Ok(Value::Null)
         }
         "addSource" => {
@@ -235,7 +361,24 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             s.touch_desk(k, day)?;
             Ok(Value::Null)
         }
-        "ghost" => crate::ghost::suggest(s, text(a, "text")?),
+        "ghost" => {
+            let draft = text(a, "text")?;
+            if crate::plan::selected(&s.get("model")?) {
+                let current = s.get("current")?;
+                let sheet = a["sheet"]
+                    .as_str()
+                    .or(current.as_str())
+                    .ok_or("Open a sheet first.")?;
+                if crate::conversation::private_sheet(s, sheet)?
+                    || crate::conversation::private_request(draft)
+                    || crate::local::sensitive(draft)
+                    || sources::audit(draft).is_none()
+                {
+                    return Ok(Value::Null);
+                }
+            }
+            crate::ghost::suggest(s, draft)
+        }
         "ghostShown" => crate::ghost::shown(s, a),
         "ghostEvent" => crate::ghost::resolve(s, a),
         "sealGuess" => {
@@ -248,13 +391,13 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             if s.list("sealed")?.iter().any(|v| v["sheet"] == k) {
                 return Err("This sheet already has a sealed guess.".into());
             }
-            let q = sources::audit(&question).ok_or("This passage stays on the sheet.")?;
-            let model = s.get("model")?;
-            let support = engine::select_rules(s, &q, scroll::approved(s)?);
-            let guess = engine::predict_ranked(&model, &q, &support, crate::jobs::prompt(s))?;
-            let v = json!({"ruleRevisions":crate::mirror::rule_revisions(&support),"ruleIds":support.iter().map(|r|r["id"].clone()).collect::<Vec<_>>(),"sources":support.iter().flat_map(|r|r["sources"].as_array().into_iter().flatten()).collect::<Vec<_>>(),"id":id(),"sheet":k,"question":q,"guess":guess,"date":now(),"model":model["name"],"actual":null});
-            s.put("sealed", &v)?;
-            Ok(json!({"id":v["id"]}))
+            seal_decision(
+                s,
+                k,
+                &question,
+                scroll::approved(s)?,
+                crate::jobs::prompt(s),
+            )
         }
         "breakSeal" => {
             let _lock = s.edit.lock().unwrap();
@@ -282,15 +425,17 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
                 }
                 return Err("This verdict was already recorded.".into());
             }
+            let private = v["localOnly"] == true
+                || crate::conversation::private_sheet(s, v["sheet"].as_str().unwrap())?;
             sources::add(
                 s,
-                "desk",
+                if private { "private-desk" } else { "desk" },
                 v["sheet"].as_str().unwrap_or("sheet"),
                 v["opened"].as_str().unwrap_or(""),
                 v["question"].as_str().unwrap_or(""),
                 v["actual"].as_str().unwrap_or(""),
             )?;
-            s.put("prediction",&json!({"id":v["id"],"date":v["opened"],"category":"decisions","predictedAt":v["date"],"ruleRevisions":v["ruleRevisions"],"sources":v["sources"],"ruleIds":v["ruleIds"],"model":v["model"],"question":v["question"],"actual":v["actual"],"guess":v["guess"],"grade":if right{3}else{0},"scope":"live"}))?;
+            s.put("prediction",&json!({"id":v["id"],"localOnly":private,"date":v["opened"],"category":"decisions","predictedAt":v["date"],"ruleRevisions":v["ruleRevisions"],"sources":v["sources"],"ruleIds":v["ruleIds"],"model":v["model"],"question":v["question"],"actual":v["actual"],"guess":v["guess"],"grade":if right{3}else{0},"scope":"live"}))?;
             Ok(Value::Null)
         }
         "stamp" | "edit" | "delete" | "create" => scroll::change(s, op, a),
@@ -381,6 +526,13 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             }
             crate::exports::request(s)
         }
+        "planUsageSettings" => {
+            std::process::Command::new("/usr/bin/open")
+                .arg("https://chatgpt.com/settings/usage")
+                .spawn()
+                .msg()?;
+            Ok(Value::Null)
+        }
         "openFolder" => {
             std::process::Command::new("/usr/bin/open")
                 .arg(&s.root)
@@ -395,4 +547,26 @@ pub fn register(s: &Store, key: &str, path: &Path, label: &str) -> Res<Value> {
     let v = json!({"id":key,"label":label,"path":path.to_string_lossy(),"added":now()});
     s.put("source", &v)?;
     Ok(v)
+}
+
+// Caller holds the notebook edit lock.
+pub(crate) fn seal_decision(
+    s: &Store,
+    k: &str,
+    question: &str,
+    rules: Vec<Value>,
+    prompt: &str,
+) -> Res<Value> {
+    let q = sources::audit(question).ok_or("This passage stays on the sheet.")?;
+    let mut model = s.get("model")?;
+    let private = crate::conversation::private_sheet(s, k)?;
+    if private && crate::plan::selected(&model) {
+        model = crate::conversation::local_model(s)
+            .ok_or("Connect a local model for this private sheet.")?;
+    }
+    let support = engine::select_rules(s, &model, &q, rules);
+    let guess = engine::predict_ranked(s, &model, &q, &support, prompt)?;
+    let v = json!({"localOnly":private,"ruleRevisions":crate::mirror::rule_revisions(&support),"ruleIds":support.iter().map(|r|r["id"].clone()).collect::<Vec<_>>(),"sources":support.iter().flat_map(|r|r["sources"].as_array().into_iter().flatten()).collect::<Vec<_>>(),"id":id(),"sheet":k,"question":q,"guess":guess,"date":now(),"model":model["name"],"actual":null});
+    s.put("sealed", &v)?;
+    Ok(json!({"id":v["id"]}))
 }

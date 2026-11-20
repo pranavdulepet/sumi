@@ -13,10 +13,27 @@ mkdir -p "$resources/licenses"
 cp LICENSE "$resources/licenses/Sumi.txt"
 cp licenses/*.txt "$resources/licenses/"
 python3 scripts/release-notices.py "$resources/licenses/Dependencies.txt"
+identity=${SUMI_SIGN_IDENTITY:--}
+if [[ -n "${SUMI_NOTARY_PROFILE:-}" && "$identity" == "-" ]]; then
+  echo "Choose a Developer ID Application identity for notarization." >&2
+  exit 1
+fi
+sign_flags=(--force --sign "$identity")
+if [[ "$identity" == "-" ]]; then
+  sign_flags+=(--timestamp=none)
+else
+  sign_flags+=(--options runtime --timestamp)
+fi
 for binary in "$resources/runtime/"*.dylib "$resources/runtime/llama-server"; do
-  codesign --force --sign - --timestamp=none "$binary"
+  codesign "${sign_flags[@]}" "$binary"
 done
-codesign --force --sign - --timestamp=none "$app"
+codesign "${sign_flags[@]}" "$app"
+if [[ -n "${SUMI_NOTARY_PROFILE:-}" ]]; then
+  /usr/bin/ditto -c -k --keepParent --norsrc --noextattr "$app" "$stage/submission.zip"
+  xcrun notarytool submit "$stage/submission.zip" --keychain-profile "$SUMI_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$app"
+  xcrun stapler validate "$app"
+fi
 codesign --verify --deep --strict "$app"
 /usr/bin/ditto -c -k --keepParent --norsrc --noextattr "$app" "$archive"
 unzip -tq "$archive"

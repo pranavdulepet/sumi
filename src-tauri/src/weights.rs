@@ -1,6 +1,6 @@
 use crate::store::*;
+use ring::digest::{Context, SHA256};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
@@ -9,10 +9,56 @@ use std::{
     time::Duration,
 };
 
-const FILE: &str = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
-const REVISION: &str = "91cad51170dc346986eccefdc2dd33a9da36ead9";
-const SIZE: u64 = 1_117_320_736;
-const SHA: &str = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e";
+struct Tier {
+    ram: u64,
+    label: &'static str,
+    repo: &'static str,
+    revision: &'static str,
+    file: &'static str,
+    size: u64,
+    sha: &'static str,
+}
+const TIERS: [Tier; 3] = [
+    Tier {
+        ram: 32,
+        label: "Qwen3.6 35B A3B",
+        repo: "unsloth/Qwen3.6-35B-A3B-GGUF",
+        revision: "a483e9e6cbd595906af30beda3187c2663a1118c",
+        file: "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        size: 22134528992,
+        sha: "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61",
+    },
+    Tier {
+        ram: 16,
+        label: "Gemma 4 12B",
+        repo: "google/gemma-4-12B-it-qat-q4_0-gguf",
+        revision: "29d097773436b69ff9feafd636ab4cf873786537",
+        file: "gemma-4-12b-it-qat-q4_0.gguf",
+        size: 6975879296,
+        sha: "93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b",
+    },
+    Tier {
+        ram: 0,
+        label: "Qwen3 4B",
+        repo: "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        revision: "a06e946bb6b655725eafa393f4a9745d460374c9",
+        file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        size: 2497281120,
+        sha: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+    },
+];
+fn tier(s: &Store) -> &'static Tier {
+    let fit = crate::local::fit(s);
+    let ram = fit["memory"].as_u64().unwrap_or(0) / 1_073_741_824;
+    let free = fit["freeDisk"].as_u64().unwrap_or(0);
+    TIERS
+        .iter()
+        .find(|t| {
+            let file = spec(s, t, "");
+            t.ram <= ram && (file.dest.is_file() || free >= t.size - file.saved() + RESERVE)
+        })
+        .unwrap_or(&TIERS[2])
+}
 const RESERVE: u64 = 3_000_000_000;
 
 struct Download<'a> {
@@ -41,16 +87,40 @@ impl Download<'_> {
         if file.metadata().msg()?.len() != self.size {
             return Ok(false);
         }
-        let mut hash = Sha256::new();
-        std::io::copy(&mut file, &mut hash).msg()?;
-        Ok(hex::encode(hash.finalize()) == self.sha)
+        let mut digest = Context::new(&SHA256);
+        let mut buffer = vec![0; 1024 * 1024];
+        loop {
+            let bytes = file.read(&mut buffer).msg()?;
+            if bytes == 0 {
+                break;
+            }
+            digest.update(&buffer[..bytes]);
+        }
+        Ok(hex::encode(digest.finish().as_ref()) == self.sha)
     }
     fn acquire(&self, free: u64) -> Res<()> {
         let dir = self.dest.parent().ok_or("Missing model directory.")?;
         fs::create_dir_all(dir).msg()?;
-        let lock = File::open(dir).msg()?;
-        lock.try_lock()
-            .map_err(|_| "A model download is already in progress in this notebook.")?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(dir.join(".download.lock"))
+            .msg()?;
+        lock.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => {
+                "A model download is already in progress in this notebook.".to_string()
+            }
+            std::fs::TryLockError::Error(error) => error.to_string(),
+        })?;
+        let result = self.acquire_locked(free);
+        // Children spawned during a download may briefly inherit the open descriptor.
+        lock.unlock().msg()?;
+        result
+    }
+    fn acquire_locked(&self, free: u64) -> Res<()> {
         if self.valid(&self.dest)? {
             return Ok(());
         }
@@ -133,23 +203,27 @@ impl Download<'_> {
         fs::rename(&partial, &self.dest).msg()
     }
 }
-fn spec<'a>(s: &Store, url: &'a str) -> Download<'a> {
+fn spec<'a>(s: &Store, t: &Tier, url: &'a str) -> Download<'a> {
     Download {
-        dest: s.root.join(".sumi/models").join(FILE),
+        dest: s.root.join(".sumi/models").join(t.file),
         url,
-        size: SIZE,
-        sha: SHA,
+        size: t.size,
+        sha: t.sha,
     }
 }
 pub fn status(s: &Store) -> Value {
-    let model = spec(s, "");
+    let t = tier(s);
+    let model = spec(s, t, "");
     let saved = model.saved();
-    json!({"bytes":saved,"total":SIZE,"required":SIZE-saved+RESERVE,"cached":model.dest.is_file()})
+    json!({"label":t.label,"file":t.file,"bytes":saved,"total":t.size,"required":t.size-saved+RESERVE,"cached":model.dest.is_file()})
 }
 pub fn download(s: &Store) -> Res<Value> {
-    let url =
-        format!("https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/{REVISION}/{FILE}");
-    let model = spec(s, &url);
+    let t = tier(s);
+    let url = format!(
+        "https://huggingface.co/{}/resolve/{}/{}",
+        t.repo, t.revision, t.file
+    );
+    let model = spec(s, t, &url);
     model.acquire(crate::local::free_bytes(&s.root))?;
     crate::bundled::use_file(s, &model.dest)
 }
@@ -172,6 +246,13 @@ mod tests {
         model.acquire(0).unwrap();
         assert_eq!(fs::read(&model.dest).unwrap(), b"GGUFexample");
         assert!(!model.partial().exists());
+        let other = File::open(dir.path().join(".download.lock")).unwrap();
+        other.lock().unwrap();
+        assert!(model
+            .acquire(0)
+            .unwrap_err()
+            .contains("already in progress"));
+        other.unlock().unwrap();
         model.acquire(0).unwrap();
         fs::write(&model.dest, b"GGUFcorrupt").unwrap();
         assert!(model.acquire(0).unwrap_err().contains("Free "));

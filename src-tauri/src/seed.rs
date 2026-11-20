@@ -1,4 +1,4 @@
-use crate::{models, scroll, sources, store::*};
+use crate::{plan, scroll, sources, store::*};
 use serde_json::{json, Value};
 const CASES: [(&str, [&str; 2], &str); 10] = [
     (
@@ -68,7 +68,11 @@ pub fn next(s: &Store) -> Res<Value> {
             .filter(|v| v["actual"].is_string())
             .map(|v| json!([v["question"], v["actual"]]))
             .collect::<Vec<_>>());
-        let external = match crate::providers::quiz_choice(s, q, opts, &earlier) {
+        let external = match if plan::selected(&m) {
+            Ok(None)
+        } else {
+            crate::providers::quiz_choice(s, q, opts, &earlier)
+        } {
             Ok(v) => v,
             Err(e) => {
                 s.set("backgroundIssue", &json!(e))?;
@@ -79,14 +83,16 @@ pub fn next(s: &Store) -> Res<Value> {
             v
         } else {
             let schema = json!({"type":"object","properties":{"choice":{"type":"string","enum":opts}},"required":["choice"],"additionalProperties":false});
-            let context = json!({"question":q,"options":opts,"earlier_choices":earlier,"rules":scroll::approved(s)?.iter().map(|v|&v["text"]).collect::<Vec<_>>()});
+            let context = json!({"question":q,"options":opts,"earlier_choices":earlier,"rules":scroll::approved(s)?.iter().filter(|v|plan::usable(&m,v)).map(|v|&v["text"]).collect::<Vec<_>>()});
             let result = if m.is_null() {
                 None
             } else {
-                models::infer_with(
+                plan::think(
+                    s,
                     &m,
+                    "setup choice",
                     "Predict this person's choice from the available evidence.",
-                    &context.to_string(),
+                    &context,
                     50,
                     Some(&schema),
                 )

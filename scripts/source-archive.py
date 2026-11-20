@@ -8,10 +8,10 @@ files = [
     "package-lock.json", "tsconfig.json", "playwright.config.ts", "rust-toolchain.toml",
     "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/build.rs",
     "src-tauri/runtime/LICENSE", "src-tauri/native.m", "src-tauri/tauri.conf.json", "website/index.html",
-    "website/shippori.woff2", "website/zen.woff2",
+    "website/paper.png", "website/shippori.woff2", "website/zen.woff2",
 ]
 folders = [
-    "src", "public", "scripts", "tests", "prompts", "licenses", "docs",
+    "catalog", "src", "public", "scripts", "tests", "prompts", "licenses", "docs",
     "src-tauri/src", "src-tauri/capabilities", "src-tauri/icons",
 ]
 paths = [root / p for p in files]

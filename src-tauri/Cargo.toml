@@ -1,6 +1,6 @@
 [package]
 name = "sumi"
-version = "1.0.6"
+version = "1.0.9"
 edition = "2021"
 license = "MIT"
 default-run = "sumi"
@@ -19,6 +19,7 @@ sha2 = "0.10"
 hex = "0.4"
 chrono = { version="0.4", features= ["serde"] }
 regex = "1"
+quick-xml="0.41"
 ureq = {version="2.12",features= ["json"] }
 walkdir = "2"
 zip = {version="2",default-features=false,features= ["deflate"] }

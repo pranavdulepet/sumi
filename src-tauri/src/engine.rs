@@ -1,4 +1,4 @@
-use crate::{models, scroll, sources, store::*};
+use crate::{plan, scroll, sources, store::*};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::atomic::Ordering};
 pub const PREDICT: &str = include_str!("../../prompts/predict.txt");
@@ -43,29 +43,46 @@ fn parsed(raw: &str) -> Res<Value> {
     }
     serde_json::from_str(&raw[a..=b]).msg()
 }
-pub fn select_rules(s: &Store, q: &str, rules: Vec<Value>) -> Vec<Value> {
-    let mut rules = rank(rules, q);
+pub fn select_rules(s: &Store, model: &Value, q: &str, rules: Vec<Value>) -> Vec<Value> {
+    let mut rules = rank(
+        rules
+            .into_iter()
+            .filter(|r| plan::usable(model, r))
+            .collect(),
+        q,
+    );
     rules.truncate(crate::jobs::rule_limit(s));
     rules
 }
-pub fn predict_ranked(model: &Value, q: &str, rules: &[Value], prompt: &str) -> Res<String> {
+pub fn predict_ranked(
+    s: &Store,
+    model: &Value,
+    q: &str,
+    rules: &[Value],
+    prompt: &str,
+) -> Res<String> {
     let entries = rules.iter().map(|v| &v["text"]).collect::<Vec<_>>();
-    models::infer(
+    plan::think(
+        s,
         model,
+        "prediction",
         prompt,
-        &json!({"situation":q,"rules":entries}).to_string(),
+        &json!({"situation":q,"rules":entries}),
         72,
+        None,
     )
 }
-pub fn grade(m: &Value, q: &str, guess: &str, actual: &str) -> Res<u32> {
+pub fn grade(s: &Store, m: &Value, q: &str, guess: &str, actual: &str) -> Res<u32> {
     if guess.trim().eq_ignore_ascii_case(actual.trim()) {
         return Ok(3);
     }
     let schema = json!({"type":"object","properties":{"reason":{"type":"string"},"grade":{"type":"integer","enum":[0,1,2,3]}},"required":["reason","grade"],"additionalProperties":false});
-    let r = models::infer_with(
+    let r = plan::think(
+        s,
         m,
+        "grading",
         GRADE,
-        &json!({"situation":q,"prediction":guess,"observed":actual}).to_string(),
+        &json!({"situation":q,"prediction":guess,"observed":actual}),
         120,
         Some(&schema),
     )?;
@@ -76,6 +93,7 @@ pub fn grade(m: &Value, q: &str, guess: &str, actual: &str) -> Res<u32> {
         .ok_or("The local grader abstained.".into())
 }
 fn reflect(s: &Store, m: &Value, train: &[Value], retain: bool) -> Res<Option<Value>> {
+    let train: Vec<_> = train.iter().filter(|r| plan::usable(m, r)).collect();
     let batch=train.iter().take(12).enumerate().map(|(index,v)|json!({"id":format!("E{index}"),"date":v["date"],"source":v["source"],"situation":v["question"].as_str().unwrap_or("").chars().take(260).collect::<String>(),"reply":v["actual"].as_str().unwrap_or("").chars().take(360).collect::<String>()})).collect::<Vec<_>>();
     if batch.len() < 2 {
         return Ok(None);
@@ -100,7 +118,11 @@ fn reflect(s: &Store, m: &Value, train: &[Value], retain: bool) -> Res<Option<Va
     let proposal = if let Some(v) = repeated {
         v
     } else {
-        let external = match crate::providers::reflect(s, REFLECT, &batch) {
+        let external = match if plan::selected(m) {
+            Ok(None)
+        } else {
+            crate::providers::reflect(s, REFLECT, &batch)
+        } {
             Ok(v) => v,
             Err(e) => {
                 s.set("backgroundIssue", &json!(e))?;
@@ -110,7 +132,15 @@ fn reflect(s: &Store, m: &Value, train: &[Value], retain: bool) -> Res<Option<Va
         let schema = json!({"type":"object","properties":{"text":{"type":"string"},"section":{"type":"string","enum":["writing","deciding","words"]},"evidence":{"type":"array","items":{"type":"string","enum":batch.iter().map(|v|&v["id"]).collect::<Vec<_>>()}}},"required":["text","section","evidence"],"additionalProperties":false});
         let answer = match external {
             Some(v) => v,
-            None => models::infer_with(m, REFLECT, &json!(batch).to_string(), 250, Some(&schema))?,
+            None => plan::think(
+                s,
+                m,
+                "reflection",
+                REFLECT,
+                &json!(batch),
+                if plan::selected(m) { 600 } else { 250 },
+                Some(&schema),
+            )?,
         };
         parsed(&answer)?
     };
@@ -168,13 +198,6 @@ fn reflect(s: &Store, m: &Value, train: &[Value], retain: bool) -> Res<Option<Va
         && s.get(&format!("dismiss/{}", record["id"]))?.is_null()
     {
         s.put("proposal", &record)?;
-        if s.get("autoStamp")? == true
-            && record["section"] == "writing"
-            && days.len() >= 5
-            && record["confidence"].as_f64().unwrap_or(0.) >= 0.75
-        {
-            scroll::change(s, "stamp", &record)?;
-        }
     }
     Ok(Some(record))
 }
@@ -187,9 +210,9 @@ fn score_incoming(s: &Store, model: &Value) -> Res<bool> {
     };
     let batch = {
         let c = s.db.lock().unwrap();
-        let mut st=c.prepare("SELECT m.id,m.source,m.stamp,m.situation FROM moments m WHERE m.split='train' AND julianday(m.stamp)>=julianday(?) AND m.source NOT IN ('desk','seal','guess-me') AND NOT EXISTS(SELECT 1 FROM docs d WHERE d.kind='prediction' AND d.id=m.id) ORDER BY m.stamp,m.id LIMIT 9").msg()?;
+        let mut st=c.prepare("SELECT m.id,m.source,m.stamp,m.situation FROM moments m WHERE m.split='train' AND julianday(m.stamp)>=julianday(?) AND m.source NOT IN ('desk','private-desk','seal','guess-me') AND (?2=0 OR m.source!='messages') AND NOT EXISTS(SELECT 1 FROM docs d WHERE d.kind='prediction' AND d.id=m.id) ORDER BY m.stamp,m.id LIMIT 9").msg()?;
         let rows = st
-            .query_map([since], |r| {
+            .query_map(rusqlite::params![since, plan::selected(model)], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -216,9 +239,16 @@ fn score_incoming(s: &Store, model: &Value) -> Res<bool> {
                     .unwrap_or_default();
                 let at = scroll::instant(stamp).unwrap_or_default();
                 let (prompt, limit, style) = crate::jobs::settings_before(&tuning, stamp);
-                let mut rules = rank_at(entries, q, at);
+                let mut rules = rank_at(
+                    entries
+                        .into_iter()
+                        .filter(|r| plan::usable(model, r))
+                        .collect(),
+                    q,
+                    at,
+                );
                 rules.truncate(limit);
-                let guess = predict_ranked(model, q, &rules, prompt)?;
+                let guess = predict_ranked(s, model, q, &rules, prompt)?;
                 let item = json!({"id":key,"date":now(),"model":model["name"],"warm":guess,"ruleRevisions":crate::mirror::rule_revisions(&rules),"style":style,"ruleLimit":limit,"version":version.map(|v|&v["id"]),"source":source,"sources":rules.iter().flat_map(|r|r["sources"].as_array().into_iter().flatten()).collect::<Vec<_>>(),"rules":rules.iter().map(|v|&v["id"]).collect::<Vec<_>>()});
                 s.put("blind", &item)?;
                 item
@@ -233,7 +263,10 @@ fn score_incoming(s: &Store, model: &Value) -> Res<bool> {
                     |r| r.get(0),
                 )
                 .msg()?;
-        let score = grade(model, q, frozen["warm"].as_str().unwrap_or(""), &actual)?;
+        if !plan::usable(model, &frozen) {
+            continue;
+        }
+        let score = grade(s, model, q, frozen["warm"].as_str().unwrap_or(""), &actual)?;
         s.put("prediction",&json!({"id":key,"source":source,"sources":frozen["sources"],"ruleIds":frozen["rules"],"version":frozen["version"],"ruleRevisions":frozen["ruleRevisions"],"model":frozen["model"],"predictedAt":frozen["date"],"date":now(),"observedAt":stamp,"scope":"incoming","category":"words","question":q,"guess":frozen["warm"],"actual":actual,"grade":score}))?;
     }
     Ok(batch.len() > 8)
@@ -268,8 +301,13 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
             )),
         }
     }
-    let m = s.get("model")?;
-    let cloud = if idle_only {
+    let primary = s.get("model")?;
+    let m = if idle_only && plan::selected(&primary) {
+        crate::conversation::local_model(s).unwrap_or_else(|| primary.clone())
+    } else {
+        primary.clone()
+    };
+    let cloud = if idle_only && !plan::selected(&primary) {
         crate::providers::backtest_provider(s)?
     } else {
         None
@@ -331,7 +369,7 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
                 }
             }
         }
-        for v in &test {
+        for v in test.iter().filter(|r| plan::usable(&m, r)) {
             if crate::quitting() {
                 return Err("The reading was interrupted.".into());
             }
@@ -360,18 +398,19 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
                                 None if scroll::instant(stamp).is_some() => reconstructed.clone(),
                                 None => vec![],
                             };
-                            let rules: Vec<_> =
-                                rank_at(context, q, scroll::instant(stamp).unwrap_or_default())
+                            let rules: Vec<_> = rank_at(
+                                context
                                     .into_iter()
-                                    .take(limit)
-                                    .collect();
+                                    .filter(|r| plan::usable(&m, r))
+                                    .collect(),
+                                q,
+                                scroll::instant(stamp).unwrap_or_default(),
+                            )
+                            .into_iter()
+                            .take(limit)
+                            .collect();
                             let permitted = cloud.as_ref().filter(|_| {
-                                v["source"] != "messages"
-                                    && !rules.iter().any(|r| {
-                                        r["sources"]
-                                            .as_array()
-                                            .is_some_and(|ss| ss.iter().any(|x| x == "messages"))
-                                    })
+                                plan::cloud_usable(v) && rules.iter().all(plan::cloud_usable)
                             });
                             let remote = (|| -> Res<Option<(String, String, Value)>> {
                                 let Some(p) = permitted else {
@@ -412,11 +451,11 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
                                     if let Err(e) = outcome {
                                         s.set("backgroundIssue", &json!(e))?;
                                     }
-                                    let cold = predict_ranked(&m, q, &[], prompt)?;
+                                    let cold = predict_ranked(s, &m, q, &[], prompt)?;
                                     let warm = if rules.is_empty() {
                                         cold.clone()
                                     } else {
-                                        predict_ranked(&m, q, &rules, prompt)?
+                                        predict_ranked(s, &m, q, &rules, prompt)?
                                     };
                                     (cold, warm, m["name"].clone())
                                 }
@@ -430,11 +469,11 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
                     let b = frozen["warm"].as_str().unwrap_or("");
                     let observed = sources::unseal(s, key)?;
                     let actual = observed.as_str();
-                    let local_only = v["source"] == "messages"
-                        || frozen["sources"]
-                            .as_array()
-                            .is_some_and(|ss| ss.iter().any(|x| x == "messages"));
-                    let external = if local_only {
+                    let local_only = !plan::cloud_usable(v) || !plan::cloud_usable(&frozen);
+                    if plan::selected(&m) && local_only {
+                        return Err("This reply can only be graded on your Mac.".into());
+                    }
+                    let external = if local_only || plan::selected(&m) {
                         None
                     } else {
                         match crate::providers::jev_grades(s, q, a, b, actual) {
@@ -448,10 +487,14 @@ fn reading(s: &Store, idle_only: bool) -> Res<Value> {
                     let (ga, gb, grader) = if let Some((ga, gb)) = external {
                         (ga, gb, json!("jev-1.14.0"))
                     } else if !m.is_null() {
-                        let ga = grade(&m, q, a, actual)?;
+                        let ga = grade(s, &m, q, a, actual)?;
                         (
                             ga,
-                            if a == b { ga } else { grade(&m, q, b, actual)? },
+                            if a == b {
+                                ga
+                            } else {
+                                grade(s, &m, q, b, actual)?
+                            },
                             m["name"].clone(),
                         )
                     } else {

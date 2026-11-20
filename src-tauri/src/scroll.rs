@@ -290,6 +290,10 @@ pub(crate) fn change_locked(s: &Store, action: &str, a: &Value) -> Res<Value> {
             json!({"id":if action == "createFromReview" { k.to_owned() } else { id() },"section":a["section"],"confidence":1.0,"evidence":[],"sources":[],"days":0})
         }
     };
+    if action == "createFromReview" && a["localOnly"] == true {
+        record["localOnly"] = json!(true);
+        record["sources"] = json!(["private-desk"]);
+    }
     if action != "delete" {
         if action != "stamp" {
             let t = a["text"].as_str().unwrap_or("").trim();

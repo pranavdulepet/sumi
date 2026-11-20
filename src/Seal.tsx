@@ -1,7 +1,6 @@
-import {Providers} from './Providers';
 import {useState} from 'react';
 import {type Row, type Action, sections, day} from './api';
-import {Models, Sources} from './Onboarding';
+import {Page} from './Page';
 function AnswerReviews({
   agent,
   log,
@@ -89,8 +88,13 @@ function Agent({a, act, log}: {a: Row; act: Action; log: Row[]}) {
   return (
     <details>
       <summary>
-        {a.name}
-        <span className="summary-end">{a.permission}</span>
+        {a.name} ·{' '}
+        {a.permission === 'Read'
+          ? 'can read selected pages'
+          : a.permission === 'Ask'
+            ? 'can ask about your preferences'
+            : 'can answer with your permission'}
+        <span className="summary-end">Change</span>
       </summary>
       <label>
         Permission
@@ -123,19 +127,6 @@ function Agent({a, act, log}: {a: Row; act: Action; log: Row[]}) {
           </label>
         ))}
       </fieldset>
-      {a.permission === 'Answer for me' && (
-        <label>
-          Minimum confidence · {Math.round(a.threshold * 100)}%
-          <input
-            type="range"
-            min=".80"
-            max="1"
-            step=".01"
-            value={a.threshold}
-            onChange={e => update({threshold: Number(e.target.value)})}
-          />
-        </label>
-      )}
       {a.permission === 'Answer for me' && (
         <AnswerReviews agent={a} log={log} update={update} />
       )}
@@ -221,8 +212,7 @@ export function Seal({
   act: Action;
   focusWaiting: boolean;
 }) {
-  const [busy, working] = useState(false),
-    [answer, write] = useState(''),
+  const [answer, write] = useState(''),
     [logId, select] = useState(''),
     [justAnswered, confirmAnswer] = useState('');
   const waiting = data.log.filter((row: Row) => row.status === 'waiting');
@@ -236,9 +226,7 @@ export function Seal({
   const [historyCount, showMore] = useState(60);
   const digest: Row[] = [...waiting, ...recent.slice(0, historyCount)];
   return (
-    <main className="page">
-      <div className="folio">印 · Permissions</div>
-      <h1>The Seal</h1>
+    <Page name="Seal" margin={<small>Who may use your notebook</small>}>
       <section>
         <h2>Your agents</h2>
         {data.agents.map((a: Row) => (
@@ -354,78 +342,6 @@ export function Seal({
           </details>
         )}
       </section>
-      <section>
-        <details>
-          <summary>Sources and readings</summary>
-          <Sources
-            sources={data.sources}
-            request={data.requestedExport}
-            act={act}
-            confirmRemove
-          />
-          <button
-            className="primary"
-            disabled={busy}
-            onClick={async () => {
-              working(true);
-              try {
-                await act('read');
-              } finally {
-                working(false);
-              }
-            }}
-          >
-            {busy ? 'Reading…' : 'Read selected sources'}
-          </button>
-        </details>
-        <details>
-          <summary>Local intelligence</summary>
-          <Models model={data.model} act={act} />
-          {data.catalogConfigured && (
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={!data.catalogOff}
-                onChange={e => act('catalogOff', {value: !e.target.checked})}
-              />
-              Check for model updates weekly
-            </label>
-          )}
-        </details>
-        <Providers data={data} act={act} />
-        <details>
-          <summary>Learning preferences</summary>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={!!data.autoStamp}
-              onChange={e => act('autoStamp', {value: e.target.checked})}
-            />
-            Automatically stamp well-supported writing habits
-          </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={!data.marginOff}
-              onChange={e => act('marginOff', {value: !e.target.checked})}
-            />
-            Show notes from my approved goals
-          </label>
-        </details>
-        <details>
-          <summary>Notebook on disk</summary>
-          <small>{data.root}</small>
-          {data.globalShortcutReady === false && (
-            <p className="small">
-              macOS could not register ⌥Space. Use New Desk Sheet in Sumi’s menu
-              bar menu, or press ⌥Space inside Sumi.
-            </p>
-          )}
-          <button onClick={() => act('openFolder')}>
-            Open notebook folder ↗
-          </button>
-        </details>
-      </section>
-    </main>
+    </Page>
   );
 }

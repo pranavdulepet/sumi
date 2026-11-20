@@ -9,6 +9,7 @@ extern "C" {
     fn sumi_notify_when_ready();
     fn sumi_entities(p: *const c_char) -> *mut c_char;
     fn sumi_free(p: *mut c_char);
+    fn sumi_quiet_power(seconds: f64) -> i32;
     fn sumi_heavy_allowed() -> i32;
     fn sumi_background_thread();
 }
@@ -26,10 +27,18 @@ pub fn names(s: &str) -> Vec<String> {
         names
     }
 }
+pub fn quiet_after_chat() -> bool {
+    unsafe { sumi_quiet_power(20.) != 0 }
+}
 pub fn idle() -> bool {
     unsafe { sumi_heavy_allowed() != 0 }
 }
+thread_local! {static IN_BACKGROUND:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+pub fn background() -> bool {
+    IN_BACKGROUND.with(|v| v.get())
+}
 pub fn background_thread() {
+    IN_BACKGROUND.with(|v| v.set(true));
     unsafe { sumi_background_thread() }
 }
 pub fn vectors() {
@@ -85,7 +94,12 @@ pub fn fit(s: &Store) -> serde_json::Value {
         .flatten()
         .find(|m| {
             let size = m["bytes"].as_u64().unwrap_or(0);
-            bytes > size * 2 + 4_000_000_000 && ollama_disk > size + 4_000_000_000
+            bytes
+                >= m["ram"]
+                    .as_u64()
+                    .map(|g| g * 1_073_741_824)
+                    .unwrap_or(size * 2 + 4_000_000_000)
+                && ollama_disk > size + 4_000_000_000
         });
     serde_json::json!({"memory":bytes,"freeDisk":disk,"recommendation":best})
 }

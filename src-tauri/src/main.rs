@@ -1,7 +1,11 @@
 mod agent_link;
 mod app;
+mod attachments;
 mod bundled;
 mod catalog;
+mod conversation;
+mod correction;
+mod desk_tools;
 mod engine;
 mod exports;
 mod first_reading;
@@ -9,8 +13,11 @@ mod forget;
 mod ghost;
 mod jobs;
 mod local;
+mod memory;
 mod mirror;
 mod models;
+mod notebook_data;
+mod plan;
 mod providers;
 mod scroll;
 mod seal;
@@ -18,6 +25,7 @@ mod seed;
 mod sources;
 mod store;
 mod transport;
+mod web_search;
 mod weights;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -33,14 +41,30 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 #[tauri::command]
 async fn notebook(
+    window: tauri::WebviewWindow,
     store: tauri::State<'_, Arc<Store>>,
     operation: String,
     args: serde_json::Value,
 ) -> Res<serde_json::Value> {
     let s = store.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || dispatch(&s, &operation, &args))
-        .await
-        .msg()?
+    tauri::async_runtime::spawn_blocking(move || {
+        if operation == "trashNotebook" {
+            notebook_data::request_removal(&s, &args)?;
+            shutdown();
+            window.app_handle().restart();
+        }
+        if operation == "askSheet" {
+            return conversation::ask_with(&s, &args, &mut |delta| {
+                let _ = window.emit(
+                    "reply-delta",
+                    serde_json::json!({"turn":args["turn"],"delta":delta}),
+                );
+            });
+        }
+        dispatch(&s, &operation, &args)
+    })
+    .await
+    .msg()?
 }
 fn dispatch(s: &Arc<Store>, op: &str, args: &serde_json::Value) -> Res<serde_json::Value> {
     if op == "beginFirstReading" {
@@ -101,6 +125,7 @@ fn run() -> Res<()> {
     if args.iter().any(|x| x == "--fixture-rpc") {
         return fixture_rpc(root, args.iter().any(|v| v == "--fixture-agents"));
     }
+    notebook_data::finish_removal(&root)?;
     let s = Arc::new(Store::open(root)?);
     app::setup(&s)?;
     tauri::Builder::default()
@@ -238,7 +263,20 @@ fn fixture_rpc(root: std::path::PathBuf, agents: bool) -> Res<()> {
         if op == "state" {
             arrival.check(&s, &downloads)?;
         }
-        let result = if op == "exportLink" {
+        let result = if op == "askSheet" && req["stream"] == true {
+            conversation::ask_with(&s, &req["args"], &mut |delta| {
+                let _ = writeln!(
+                    std::io::stdout(),
+                    "{}",
+                    serde_json::json!({"event":"reply-delta","payload":{"turn":req["args"]["turn"],"delta":delta}})
+                );
+            })
+        } else if op == "exportNotebook" {
+            let dest = std::env::temp_dir().join(format!("sumi-export-{}.zip", crate::store::id()));
+            crate::notebook_data::export(&s, &dest).map(|()| serde_json::json!(dest))
+        } else if op == "trashNotebook" {
+            Err("Fixture notebooks cannot operate on the Mac Trash.".into())
+        } else if op == "exportLink" {
             exports::request(&s)
         } else if op == "exports" {
             exports::find(&s, &downloads)

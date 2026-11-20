@@ -3,21 +3,24 @@ import {execFileSync, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {createInterface} from 'node:readline';
 import {
+  copyFile,
   mkdir,
+  truncate,
   mkdtemp,
   readFile,
-  readdir,
   rename,
   rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
+import {constants} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {basename, dirname, join} from 'node:path';
 async function fixtureNotebook(
   agents = false,
   datedHistory?: {markdown: string; scores: object[]},
   existingFolder?: string,
+  event?: (message: any) => void,
 ) {
   const folder = existingFolder ?? (await mkdtemp(join(tmpdir(), 'sumi-ui-')));
   if (datedHistory) {
@@ -40,18 +43,49 @@ async function fixtureNotebook(
     {stdio: ['pipe', 'pipe', 'inherit']},
   );
   const pending: ((s: string) => void)[] = [];
-  createInterface({input: core.stdout}).on('line', s => pending.shift()?.(s));
+  createInterface({input: core.stdout}).on('line', s => {
+    const m = JSON.parse(s);
+    if (m.event) {
+      event?.(m);
+      return;
+    }
+    pending.shift()?.(s);
+  });
+  let stopped = '';
+  function stop(reason: string) {
+    stopped = reason;
+    for (const finish of pending.splice(0))
+      finish(JSON.stringify({error: reason}));
+  }
+  core.once('error', e => stop(e.message));
+  core.stdin.on('error', e => stop(e.message));
+  core.once('close', (code, signal) =>
+    stop('Notebook fixture closed (' + (signal || code) + ').'),
+  );
   function rpc(op: string, args = {}) {
     return new Promise<any>((resolve, reject) => {
+      if (stopped) return reject(Error(stopped));
       pending.push(s => {
         const result = JSON.parse(s);
         if (result.error) reject(Error(result.error));
         else resolve(result.ok);
       });
-      core.stdin.write(JSON.stringify({operation: op, args}) + '\n');
+      core.stdin.write(
+        JSON.stringify({operation: op, args, stream: !!event}) + '\n',
+      );
     });
   }
   return {core, rpc, folder};
+}
+
+// Exercise automatic discovery with a predictable installed model on the test Mac.
+function withTestModel(rpc: (op: string, args?: object) => Promise<any>) {
+  return async (op: string, args: object) => {
+    const result = await rpc(op, args);
+    return op === 'models'
+      ? result.filter((m: {name: string}) => m.name === 'llama3.2:3b')
+      : result;
+  };
 }
 
 test('brushstroke, real local prediction, correction, history and persisted sheets', async ({
@@ -59,7 +93,7 @@ test('brushstroke, real local prediction, correction, history and persisted shee
 }, info) => {
   const {core, rpc, folder} = await fixtureNotebook();
   try {
-    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.exposeFunction('sumiTestIPC', withTestModel(rpc));
     await page.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = {
         transformCallback: () => 1,
@@ -70,6 +104,8 @@ test('brushstroke, real local prediction, correction, history and persisted shee
       };
     });
     await page.goto('/');
+    await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
+    await page.getByRole('button', {name: 'Continue', exact: true}).click();
     await expect(page.getByText('A mark of your own.')).toBeVisible();
     const box = await page
       .getByRole('img', {name: /Draw your personal/})
@@ -80,12 +116,58 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     await page.mouse.move(box.x + 180, box.y + 90, {steps: 16});
     await page.mouse.up();
     await page.getByRole('button', {name: 'Keep my mark'}).click();
-    await page.getByRole('button', {name: /llama3.2:3b/}).click();
-    await page.getByRole('button', {name: 'Continue', exact: true}).click();
+    await page.getByRole('button', {name: 'Teach a correction'}).click();
+    await expect(page.getByLabel('Your correction')).toBeVisible();
+    await expect(
+      page.getByRole('button', {name: /export|chat history/i}),
+    ).toHaveCount(0);
     await page
-      .getByRole('button', {name: 'Continue with a clean page'})
-      .click();
+      .getByLabel('Your correction')
+      .fill(
+        'For a print proof, I asked for uncoated paper so I could mark it in pencil.',
+      );
+    await page.getByRole('button', {name: 'Read my correction'}).click();
+    const learned = page.getByLabel('What Sumi learned');
+    await expect(learned).toHaveValue(/paper|pencil/i, {timeout: 90000});
+    expect((await rpc('state')).entries).toHaveLength(0);
+    const rule =
+      'For pencil proofing, I always choose uncoated paper over glossy paper.';
+    await learned.fill(rule);
+    await page.getByRole('button', {name: 'Keep this sentence'}).click();
+    await expect(page.getByText(rule, {exact: true})).toBeVisible();
+    await page.reload();
+    await page
+      .getByLabel('Your next decision')
+      .fill('For the pencil proof, should I order glossy or uncoated paper?');
+    await page.getByRole('button', {name: 'Make a guess'}).click();
+    await expect(page.getByLabel('Your decision')).toBeVisible({
+      timeout: 90000,
+    });
+    const hidden = await rpc('state');
+    expect(hidden.sealed.guess).toBeUndefined();
+    expect(hidden.sealed.ruleIds).toContain(hidden.firstCorrection.id);
+    expect(hidden.scores).toHaveLength(0);
+    await page.reload();
+    await page.getByLabel('Your decision').fill('Order uncoated paper.');
+    await page.getByRole('button', {name: 'Open the seal'}).click();
+    await expect(page.getByText('The sentence Sumi read')).toBeVisible();
+    expect((await rpc('state')).sealed.guess).toMatch(/uncoated/i);
+    await page.screenshot({path: info.outputPath('correction-reveal.png')});
+    await page.getByRole('button', {name: 'It matched'}).click();
     await page.getByRole('button', {name: 'Open the Desk'}).click();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    const completed = await rpc('state');
+    expect(completed.entries).toHaveLength(1);
+    expect(completed.firstCorrection).toBeNull();
+    await page.keyboard.press('Meta+,');
+    await page.getByRole('button', {name: 'Start with a correction'}).click();
+    await expect(page.getByLabel('Your correction')).toHaveValue('');
+    await page.getByRole('button', {name: 'Return to my notebook'}).click();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    expect(completed.sources).toHaveLength(0);
+    expect(completed.requestedExport).toBeNull();
+    await rpc('newSheet');
+    await page.reload();
     await page
       .getByLabel('Desk sheet')
       .fill('Should I keep the meeting brief or make it detailed');
@@ -97,7 +179,7 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     await page.getByRole('button', {name: 'It missed'}).click();
     await page.keyboard.press('Meta+3');
     await expect(
-      page.getByText('0 of 1 scored guesses matched.'),
+      page.getByText('1 of 2 scored guesses matched.'),
     ).toBeVisible();
     await page.keyboard.press('Meta+2');
     await page.getByRole('button', {name: 'Write an entry'}).click();
@@ -122,7 +204,9 @@ test('brushstroke, real local prediction, correction, history and persisted shee
     ).toBeVisible();
     const range = page.getByLabel('Scroll history');
     await range.focus();
-    await range.press('Home');
+    await range.press('End');
+    await range.press('ArrowLeft');
+    await range.press('ArrowLeft');
     await expect(
       page.getByRole('button', {
         name: 'I choose short meetings when the agenda is clear.',
@@ -140,11 +224,14 @@ test('brushstroke, real local prediction, correction, history and persisted shee
       animations: 'disabled',
     });
     await page.getByRole('button', {name: 'Places'}).click();
-    await page.getByRole('button', {name: /^Seal/}).click();
-    await expect(page.getByRole('heading', {name: 'The Seal'})).toBeVisible();
+    await page.getByRole('button', {name: /^Settings/}).click();
+    await page.getByRole('button', {name: 'Connected agents'}).click();
+    await expect(
+      page.getByRole('heading', {name: 'Seal', exact: true}),
+    ).toBeVisible();
     await page.reload();
     await expect(page.getByLabel('Desk sheet')).toHaveValue(/Should I keep/);
-    const sheet = (await readdir(join(folder, 'desk')))[0];
+    const sheet = (await rpc('state')).current + '.md';
     expect(await readFile(join(folder, 'desk', sheet), 'utf8')).toContain(
       'Should I keep',
     );
@@ -194,7 +281,7 @@ test('first reading shows a recent reply and leaves older history for idle time'
         [1, 1],
       ],
     });
-    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.exposeFunction('sumiTestIPC', withTestModel(rpc));
     await page.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = {
         transformCallback: () => 1,
@@ -205,10 +292,13 @@ test('first reading shows a recent reply and leaves older history for idle time'
       };
     });
     await page.goto('/');
-    await page.getByRole('button', {name: /llama3.2:3b/}).click();
-    await page.getByRole('button', {name: 'Continue', exact: true}).click();
-    await page.getByRole('button', {name: 'Import chat export'}).click();
-    await page.getByRole('button', {name: 'Begin the first reading'}).click();
+    await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
+
+    await expect(page.getByText('Ready to think on this Mac.')).toBeVisible();
+    // Simulate a reading already requested on a previous build.
+    await rpc('pickSource', {kind: 'export'});
+    await rpc('beginFirstReading', {notify: false});
+    await page.reload();
     await expect(
       page.getByText('Sumi hid 1 reply before making its guess.'),
     ).toBeVisible({timeout: 90000});
@@ -282,8 +372,9 @@ test('first reading survives a reloaded window and resumes a scored notebook aft
       };
     });
     await page.goto('/');
-    await page.getByRole('button', {name: 'Import chat export'}).click();
-    await page.getByRole('button', {name: 'Begin the first reading'}).click();
+    await notebook.rpc('pickSource', {kind: 'export'});
+    await notebook.rpc('beginFirstReading', {notify: false});
+    await page.reload();
     await expect(
       page.getByRole('heading', {name: 'Reading your words.'}),
     ).toBeVisible();
@@ -363,8 +454,10 @@ test('a requested export arrives after reopening and waits for consent', async (
     });
     await page.goto('/');
     await page.getByLabel('Desk sheet').fill('Keep this draft open.');
-    await expect(page.getByText('Saved', {exact: true})).toBeVisible();
-    await page.keyboard.press('Meta+4');
+    await expect
+      .poll(async () => (await notebook.rpc('state')).sheet)
+      .toBe('Keep this draft open.');
+    await page.keyboard.press('Meta+,');
     await page.getByText('Sources and readings', {exact: true}).click();
     await page.getByRole('button', {name: 'Request ChatGPT history ↗'}).click();
     await expect(
@@ -433,7 +526,7 @@ test('a requested export arrives after reopening and waits for consent', async (
     await expect(page.getByLabel('Desk sheet')).toHaveValue(
       'Keep this draft open.',
     );
-    await page.keyboard.press('Meta+4');
+    await page.keyboard.press('Meta+,');
     await page.getByText('Sources and readings', {exact: true}).click();
     await page.getByRole('button', {name: 'Read selected sources'}).click();
     await expect
@@ -658,7 +751,7 @@ test('Desk distinguishes accepted ink, a written alternative, dismissal and movi
     await expect(hint).toBeVisible();
     await sheet.press('ArrowLeft');
     await expect(hint).toHaveCount(0);
-    await sheet.press('End');
+    await sheet.press('Meta+ArrowRight');
     await expect(hint).toBeVisible();
     await sheet.press('Escape');
     await expect(hint).toHaveCount(0);
@@ -682,6 +775,7 @@ test('Desk distinguishes accepted ink, a written alternative, dismissal and movi
     hold = false;
     release!();
     await page.keyboard.press('Meta+3');
+    await page.getByText('Details', {exact: true}).click();
     await page.getByText('How the score is measured').click();
     await expect(
       page.getByText('Ghost ink · 1 accepted of 4 shown.'),
@@ -739,7 +833,7 @@ test('morning return preserves the old sheet and delivers a waiting agent its an
     const sheet = page.getByLabel('Desk sheet');
     const evening = 'I want to finish the sketch tomorrow.';
     await sheet.fill(evening);
-    await expect(page.getByText('Saved', {exact: true})).toBeVisible();
+    await expect.poll(async () => (await rpc('state')).sheet).toBe(evening);
     await page.keyboard.press('Meta+4');
     await page
       .getByRole('button', {name: 'Claude Code ＋', exact: true})
@@ -802,7 +896,9 @@ test('morning return preserves the old sheet and delivers a waiting agent its an
       }),
     ).toBeVisible();
     await sheet.fill('Start with the ink sketch.');
-    await expect(page.getByText('Saved', {exact: true})).toBeVisible();
+    await expect
+      .poll(async () => (await rpc('state')).sheet)
+      .toBe('Start with the ink sketch.');
     await page.reload();
     await expect(sheet).toHaveValue('Start with the ink sketch.');
     await page
@@ -1090,16 +1186,16 @@ test('resume the publisher’s real GGUF download and seal a decision without an
 }) => {
   test.skip(
     process.env.SUMI_TEST_MODEL_DOWNLOAD !== '1',
-    'Requires the free 1.12 GB publisher download.',
+    'Requires the hardware-tier GGUF download.',
   );
-  test.setTimeout(420000);
+  test.setTimeout(1800000);
   page.setDefaultTimeout(15000);
   const first = await fixtureNotebook();
   const partial = join(
     first.folder,
     '.sumi',
     'models',
-    'qwen2.5-1.5b-instruct-q4_k_m.gguf.partial',
+    (await first.rpc('modelDownloadStatus')).file + '.partial',
   );
   let writer: typeof first | undefined, reader: typeof first | undefined;
   const closed = (core: typeof first.core) =>
@@ -1114,6 +1210,17 @@ test('resume the publisher’s real GGUF download and seal a decision without an
         [1, 1],
       ],
     });
+    // A verified local copy can seed the prefix on repeat runs. Both continuations
+    // still use the publisher, and the runtime verifies the entire finished file.
+    let startingBytes = 0;
+    const seed = process.env.SUMI_TEST_GGUF_PREFIX;
+    if (seed && basename(seed) === basename(partial, '.partial')) {
+      const bytes = (await stat(seed)).size;
+      startingBytes = Math.max(0, bytes - 96 * 1024 * 1024);
+      await mkdir(dirname(partial), {recursive: true});
+      await copyFile(seed, partial, constants.COPYFILE_FICLONE);
+      await truncate(partial, startingBytes);
+    }
     first.core.stdin.write(
       JSON.stringify({operation: 'downloadBundled', args: {}}) + '\n',
     );
@@ -1122,7 +1229,7 @@ test('resume the publisher’s real GGUF download and seal a decision without an
         timeout: 120000,
         intervals: [100],
       })
-      .toBeGreaterThan(4_000_000);
+      .toBeGreaterThan(startingBytes + 4_000_000);
     first.core.kill('SIGTERM');
     await closed(first.core);
     const offset = (await stat(partial)).size;
@@ -1136,7 +1243,12 @@ test('resume the publisher’s real GGUF download and seal a decision without an
         steps.push(progress.bytes);
         return progress;
       }
-      return writer!.rpc(op, args);
+      try {
+        return await writer!.rpc(op, args);
+      } catch (e) {
+        if (op === 'downloadBundled') console.error('Bundled download:', e);
+        throw e;
+      }
     });
     await page.addInitScript(() => {
       (window as any).__TAURI_INTERNALS__ = {
@@ -1149,22 +1261,21 @@ test('resume the publisher’s real GGUF download and seal a decision without an
     });
     await page.goto('/');
     await expect(
-      page.getByRole('heading', {name: 'A mind for Sumi.'}),
+      page.getByRole('heading', {name: /Your notebook stays/}),
     ).toBeVisible();
-    await page.getByRole('button', {name: 'Resume Qwen 2.5 download'}).click();
+    await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
+    await page.getByRole('button', {name: /^Resume .* download$/}).click();
     await expect(
-      page.getByRole('progressbar', {name: 'Qwen download'}),
+      page.getByRole('progressbar', {name: 'Local model download'}),
     ).toBeVisible();
-    await expect(page.getByText('Ready for your notebook.')).toBeVisible({
-      timeout: 240000,
+    await expect(page.getByText('Ready to think on this Mac.')).toBeVisible({
+      timeout: 1500000,
     });
     expect(steps).toContain(offset);
     expect(steps.some(n => n > offset)).toBeTruthy();
     await page.getByRole('button', {name: 'Continue', exact: true}).click();
-    await page
-      .getByRole('button', {name: 'Continue with a clean page'})
-      .click();
-    await page.getByRole('button', {name: 'Open the Desk'}).click();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    await page.reload();
     await page
       .getByLabel('Desk sheet')
       .fill('Should I sketch the cover first or start painting right away?');
@@ -1191,5 +1302,541 @@ test('resume the publisher’s real GGUF download and seal a decision without an
       await closed(session.core);
     }
     await rm(first.folder, {recursive: true, force: true});
+  }
+});
+
+test('the ChatGPT choice waits for a completed check and keeps advanced setup in Settings', async ({
+  page,
+}, info) => {
+  const {rpc, core} = await fixtureNotebook();
+  try {
+    await rpc('mark', {
+      points: [
+        [0.1, 0.56],
+        [0.18, 0.43],
+        [0.28, 0.35],
+        [0.39, 0.36],
+        [0.52, 0.46],
+        [0.67, 0.59],
+        [0.78, 0.6],
+        [0.9, 0.48],
+      ],
+    });
+    let attempts = 0;
+    let connected = false;
+    let finishCheck: (() => void) | undefined;
+    await page.exposeFunction('sumiTestIPC', async (op: string, args: any) => {
+      // Browser automation cannot consent on a person's OpenAI account.
+      // The native transport test checks the actual HTTP and streaming contract.
+      if (op === 'connectPlan') {
+        if (++attempts === 1) throw Error('Sign-in was cancelled.');
+        await new Promise<void>(resolve => {
+          finishCheck = resolve;
+        });
+        connected = true;
+        return true;
+      }
+      const value = await rpc(op, args);
+      if (op === 'state' && connected)
+        return {
+          ...value,
+          model: {runtime: 'ChatGPT', name: 'plan-test'},
+          providers: [{id: 'ChatGPT', primary: true}],
+        };
+      return value;
+    });
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    const signIn = page.getByRole('button', {name: 'Continue with ChatGPT'});
+    await expect(signIn).toBeVisible();
+    await expect(
+      page.getByRole('button', {name: 'Think on this Mac instead'}),
+    ).toBeVisible();
+    await expect(page.getByRole('combobox')).toHaveCount(0);
+    await page.screenshot({path: info.outputPath('think.png')});
+    await signIn.click();
+    await expect(page.getByRole('alert')).toContainText('cancelled');
+    await signIn.click();
+    await expect(page.getByText('Waiting for ChatGPT…')).toBeVisible();
+    await expect(
+      page.getByRole('button', {name: 'Continue', exact: true}),
+    ).toHaveCount(0);
+    finishCheck!();
+    await expect(page.getByRole('status')).toHaveText(
+      'Connected to your ChatGPT plan.',
+    );
+    await page.getByRole('button', {name: 'Continue', exact: true}).click();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    await page.reload();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    await page.keyboard.press('Meta+,');
+    await expect(
+      page.getByRole('heading', {name: 'Settings', exact: true}),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', {name: 'Disconnect ChatGPT'}),
+    ).toBeVisible();
+    await page.getByText('Optional providers', {exact: true}).click();
+    await expect(page.getByRole('combobox')).toBeVisible();
+    await page.getByRole('button', {name: 'Done'}).click();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+  } finally {
+    core.stdin.end();
+  }
+});
+
+test('one sheet keeps a conversation, a correction, and a reusable method', async ({
+  page,
+}, info) => {
+  const {core, rpc, folder} = await fixtureNotebook();
+  try {
+    await rpc('mark', {
+      points: [
+        [0.14, 0.65],
+        [0.48, 0.23],
+        [0.7, 0.71],
+        [0.9, 0.47],
+      ],
+    });
+    await rpc('model', {name: 'llama3.2:3b', runtime: 'Ollama'});
+    await rpc('finish');
+    await rpc('create', {
+      section: 'deciding',
+      text: 'For museum visits, I pick one painting to spend time with.',
+    });
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    const field = page.getByLabel('Desk sheet');
+    async function ask(text: string, count: number) {
+      await field.fill(text);
+      await page.getByRole('button', {name: 'Ask Sumi', exact: true}).click();
+      await expect(page.locator('.exchange')).toHaveCount(count, {
+        timeout: 90000,
+      });
+      await expect(field).toHaveValue('');
+    }
+    await ask(
+      'Help me plan a museum visit. I have twenty minutes to see a painting called Blue Heron. Give me two short steps.',
+      1,
+    );
+    await page.getByText('Behind this reply', {exact: true}).click();
+    await expect(page.locator('.receipt')).toContainText('For museum visits');
+    await page.screenshot({path: info.outputPath('conversation.png')});
+    const first = await rpc('state');
+    expect(
+      await readFile(
+        join(folder, 'desk', 'conversations', first.current + '.md'),
+        'utf8',
+      ),
+    ).toContain(first.chat.turns[0].reply);
+    await page.reload();
+    await ask('Remind me of the name of the painting I mentioned.', 2);
+    expect((await rpc('state')).chat.turns[1].reply).toMatch(/Blue Heron/i);
+    await ask(
+      'Help me plan a museum visit again, this time with five minutes to look at the painting.',
+      3,
+    );
+    await ask(
+      'For every museum visit, always choose one painting and give me a question to think about.',
+      4,
+    );
+    const skill = (await rpc('state')).skills[0];
+    expect(skill.title.trim()).toBeTruthy();
+    expect(
+      await readFile(join(folder, 'scroll', 'skills', skill.file), 'utf8'),
+    ).toContain('one painting');
+    await page.keyboard.press('Meta+2');
+    await page.getByText(skill.title, {exact: true}).click();
+    await expect(page.getByText(skill.body, {exact: true})).toBeVisible();
+    await page.screenshot({path: info.outputPath('scroll-skills.png')});
+    await page.keyboard.press('Meta+1');
+    await page.getByRole('button', {name: /^Sheets/}).click();
+    await page.getByRole('button', {name: /New sheet/}).click();
+    await expect(page.locator('.exchange')).toHaveCount(0);
+    await ask('Give me a plan for a museum visit tomorrow.', 1);
+    const next = await rpc('state');
+    expect(next.current).not.toBe(first.current);
+    expect(next.chat.turns[0].skill).toBe(skill.title);
+    expect(next.chat.private).toBe(true);
+    await page.getByText('Behind this reply', {exact: true}).click();
+    await expect(page.locator('.receipt')).toContainText(
+      'Skill · ' + skill.title,
+    );
+    await page.emulateMedia({colorScheme: 'dark'});
+    await page.screenshot({path: info.outputPath('night-ink.png')});
+    await page.setViewportSize({width: 520, height: 600});
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(520);
+    await page.getByRole('button', {name: 'Correct this reply'}).click();
+    await expect(page.getByText('The reply you’re correcting')).toBeVisible();
+    await expect(page.getByLabel('Your correction')).toBeVisible();
+  } finally {
+    core.stdin.end();
+  }
+});
+
+test('a dinner question chooses its own tools and remembers a change of mind', async ({
+  page,
+}, info) => {
+  const {core, rpc} = await fixtureNotebook();
+  try {
+    await rpc('mark', {
+      points: [
+        [0.12, 0.6],
+        [0.43, 0.25],
+        [0.63, 0.72],
+        [0.88, 0.4],
+      ],
+    });
+    await rpc('model', {name: 'llama3.2:3b', runtime: 'Ollama'});
+    await rpc('finish');
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    const field = page.getByLabel('Desk sheet');
+    async function say(text: string) {
+      await field.fill(text);
+      await field.press('Enter');
+      await expect(page.locator('.exchange')).toHaveCount(1, {timeout: 90000});
+      await expect(field).toHaveValue('');
+    }
+    async function fresh() {
+      await page.getByRole('button', {name: /^Sheets/}).click();
+      await page.getByRole('button', {name: /New sheet/}).click();
+      await expect(page.locator('.exchange')).toHaveCount(0);
+    }
+    const before =
+      'When we split a dinner bill, always give me just the amount per person.';
+    const after =
+      'For dinner bills, from now on show the calculation as well as the amount per person.';
+    await say(before);
+    const first = (await rpc('state')).skills[0];
+    expect(first.title.trim()).toBeTruthy();
+    expect(first.body).toBe(before);
+    await fresh();
+    await say(after);
+    const updated = (await rpc('state')).skills;
+    expect(updated).toHaveLength(1);
+    expect(updated[0].id).toBe(first.id);
+    expect(updated[0].body).toBe(after);
+    await page.reload();
+    await fresh();
+    await say(
+      'Can you split a $96 dinner bill between four people and tell me what day tomorrow is?',
+    );
+    const turn = (await rpc('state')).chat.turns[0];
+    const tomorrow = new Date(turn.at);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const weekday = tomorrow.toLocaleDateString('en-US', {weekday: 'long'});
+    const expected = tomorrow.toLocaleDateString('en-CA');
+    expect(turn.tools.find((v: any) => v.tool === 'Calendar').date).toBe(
+      expected,
+    );
+    expect(turn.tools.find((v: any) => v.tool === 'Calculator').value).toBe(24);
+    expect(turn.skill).toBe(updated[0].title);
+    await expect(page.locator('.reply')).toContainText('24');
+    await expect(page.locator('.reply')).toContainText(weekday);
+    await expect(page.getByLabel('Working')).toContainText('96/4 = 24');
+    await page.screenshot({path: info.outputPath('dinner.png')});
+    await page.getByText('Behind this reply', {exact: true}).click();
+    await expect(page.locator('.receipt')).toContainText(updated[0].title);
+    await fresh();
+    await say(
+      'What did I originally ask you to do with dinner bills, and how did that change?',
+    );
+    const timeline = page.getByLabel('Your earlier instructions');
+    await expect(timeline.locator('li')).toHaveCount(2);
+    await expect(timeline.locator('li').first()).toContainText(before);
+    await expect(timeline.locator('li').last()).toContainText(after);
+    await page.screenshot({path: info.outputPath('timeline.png')});
+    await fresh();
+    await say('My pottery budget is 84 dollars.');
+    await fresh();
+    await say(
+      'Using the pottery budget I mentioned, how much can I spend per class if I take four classes?',
+    );
+    const budget = (await rpc('state')).chat.turns[0];
+    const passages = budget.tools.find(
+      (v: any) => v.tool === 'Notebook',
+    ).passages;
+    expect(passages.map((v: any) => v.words)).toEqual([
+      'My pottery budget is 84 dollars.',
+    ]);
+    expect(budget.tools.find((v: any) => v.tool === 'Calculator')?.value).toBe(
+      21,
+    );
+    await expect(page.locator('.reply')).toContainText('21');
+  } finally {
+    core.stdin.end();
+  }
+});
+
+test('a weekend plan uses live sources and the current preference from another sheet', async ({
+  page,
+}, info) => {
+  test.skip(
+    process.env.SUMI_LIVE_SEARCH !== '1',
+    'Uses the free public search service and an installed local model.',
+  );
+  const {core, rpc} = await fixtureNotebook();
+  try {
+    await rpc('mark', {
+      points: [
+        [0.12, 0.75],
+        [0.48, 0.35],
+        [0.85, 0.52],
+      ],
+    });
+    await rpc('model', {name: 'llama3.2:3b', runtime: 'Ollama'});
+    await rpc('finish');
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        invoke: (cmd: string, p: any) =>
+          cmd === 'notebook'
+            ? (window as any).sumiTestIPC(p.operation, p.args)
+            : Promise.resolve(1),
+      };
+    });
+    await page.goto('/');
+    const field = page.getByLabel('Desk sheet');
+    async function say(text: string) {
+      await field.fill(text);
+      await field.press('Enter');
+      await expect(field).toHaveValue('', {timeout: 90000});
+    }
+    await say(
+      'I live in Boston. On weekends I love hands-on printmaking workshops.',
+    );
+    await page.getByRole('button', {name: /^Sheets/}).click();
+    await page.getByRole('button', {name: /New sheet/}).click();
+    await say('What should I do this weekend?');
+    const proposal = page.locator('.search-proposal');
+    await expect(proposal).toContainText('Boston');
+    await expect(proposal).toContainText('art workshops');
+    const draft = (await rpc('state')).chat.turns[0];
+    expect(draft.web.sources).toBeUndefined();
+    await page
+      .getByRole('button', {name: 'Search the web', exact: true})
+      .click();
+    await expect(page.locator('.source-link').first()).toBeVisible({
+      timeout: 90000,
+    });
+    const result = (await rpc('state')).chat.turns[0];
+    expect(result.web.status).toBe('done');
+    expect(result.web.sources[result.web.pick].url).toMatch(/^https?:\/\//);
+    expect(result.reply.length).toBeGreaterThan(30);
+    await page.getByLabel('Show remembered preference').hover();
+    await expect(page.getByLabel('Remembered words')).toContainText(
+      'printmaking',
+    );
+    await page.screenshot({path: info.outputPath('weekend.png')});
+    await page.getByRole('button', {name: 'Not true anymore'}).click();
+    await page.reload();
+    await expect(page.locator('.source-link').first()).toBeVisible();
+    await page.keyboard.press('Meta+k');
+    await page.getByText('Earlier memories', {exact: true}).click();
+    await expect(page.locator('.dated-notes')).toContainText('printmaking');
+    await page.keyboard.press('Meta+,');
+    await page.getByText('Web search', {exact: true}).click();
+    await page.getByLabel('Automatically look up weekend listings').check();
+    await page.keyboard.press('Meta+1');
+    async function fresh() {
+      await page.getByRole('button', {name: /^Sheets/}).click();
+      await page.getByRole('button', {name: /New sheet/}).click();
+    }
+    await fresh();
+    await say('What should I do this weekend?');
+    const automatic = (await rpc('state')).chat.turns[0];
+    expect(automatic.web.status).toBe('done');
+    expect(automatic.web.query).not.toMatch(/printmaking|art workshops/i);
+    expect(automatic.usedMemory).toBeUndefined();
+    await fresh();
+    await page.getByLabel('Keep this sheet offline').check();
+    await say('What should I do this weekend?');
+    const offline = (await rpc('state')).chat.turns[0];
+    expect(offline.web.status).toBe('private');
+    expect(offline.web.sources).toBeUndefined();
+    await expect(page.locator('.source-list, .search-proposal')).toHaveCount(0);
+    console.log(
+      'Weekend recommendation:',
+      result.reply,
+      'Source:',
+      result.web.sources[result.web.pick].url,
+    );
+  } finally {
+    core.stdin.end();
+  }
+});
+
+test('read a workshop schedule, follow up from the file, then correct a dated project memory', async ({
+  page,
+}, info) => {
+  let chunks = 0;
+  const {rpc, core} = await fixtureNotebook(false, undefined, undefined, m => {
+    chunks++;
+    void page
+      .evaluate(message => (window as any).sumiDelta?.(message.payload), m)
+      .catch(() => {});
+  });
+  try {
+    await rpc('model', {runtime: 'Ollama', name: 'llama3.2:3b'});
+    await rpc('mark', {
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    });
+    await rpc('finish');
+    await page.exposeFunction('sumiTestIPC', rpc);
+    await page.addInitScript(() => {
+      const callbacks = new Map();
+      let serial = 0;
+      (window as any).__TAURI_INTERNALS__ = {
+        transformCallback: (fn: any) => {
+          callbacks.set(++serial, fn);
+          return serial;
+        },
+        unregisterCallback: (id: number) => callbacks.delete(id),
+        invoke: (cmd: string, p: any) => {
+          if (cmd === 'notebook')
+            return (window as any).sumiTestIPC(p.operation, p.args);
+          if (cmd === 'plugin:event|listen' && p.event === 'reply-delta')
+            (window as any).sumiDelta = (payload: any) =>
+              callbacks.get(p.handler)?.({
+                event: p.event,
+                payload,
+                id: p.handler,
+              });
+          return Promise.resolve(1);
+        },
+      };
+      (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+        unregisterListener: () => {},
+      };
+    });
+    await page.goto('/');
+    const field = page.getByLabel('Desk sheet');
+    await page.getByLabel('Choose attachments').setInputFiles({
+      name: 'studio-classes.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from(
+        'Workshop,Day,Start,Seats\nLinocut,Saturday,10 am,8\nBookbinding,Sunday,2 pm,6',
+      ),
+    });
+    await expect(
+      page.getByRole('button', {name: 'Remove studio-classes.csv'}),
+    ).toBeVisible();
+    await field.fill('Which workshop in my file is on Sunday?');
+    await field.press('Enter');
+    await expect(
+      page.locator('.exchange').last().locator('.reply'),
+    ).toContainText(/bookbinding/i, {timeout: 90000});
+    expect(chunks).toBeGreaterThan(1);
+    await page.getByRole('button', {name: 'Maybe later'}).click();
+    await field.fill('How many seats does that Sunday class have?');
+    await field.press('Enter');
+    await expect(page.locator('.exchange')).toHaveCount(2, {timeout: 90000});
+    await expect(
+      page.locator('.exchange').last().locator('.reply'),
+    ).toContainText(/6|six/i);
+    await page.screenshot({path: info.outputPath('workshop.png')});
+    await page.locator('.receipt summary').last().click();
+    await page.getByRole('button', {name: 'Try this answer again'}).click();
+    await expect(
+      page.getByRole('button', {name: 'Try this answer again'}),
+    ).toBeEnabled({timeout: 90000});
+    expect((await rpc('state')).chat.turns[1].regenerations).toBe(1);
+    await field.fill('I am working on the spring exhibition.');
+    await field.press('Enter');
+    await expect(page.locator('.exchange')).toHaveCount(3, {timeout: 90000});
+    await page.keyboard.press('Meta+k');
+    await page
+      .getByText('I am working on the spring exhibition', {exact: true})
+      .click();
+    await page.getByRole('button', {name: 'Edit memory'}).click();
+    await page
+      .getByLabel('Correct this memory')
+      .fill('I am working on the autumn exhibition.');
+    await page.getByRole('button', {name: 'Save correction'}).click();
+    await expect(
+      page.getByText('I am working on the autumn exhibition.', {exact: true}),
+    ).toBeVisible();
+    await page.reload();
+    await expect(page.getByLabel('Desk sheet')).toBeVisible();
+    await page.keyboard.press('Meta+k');
+    await expect(
+      page.getByText('I am working on the autumn exhibition.', {exact: true}),
+    ).toBeVisible();
+    await page.keyboard.press('Alt+Space');
+    await expect(field).toBeVisible();
+    await field.fill('What did you say about bookbinding in our previous chat?');
+    await field.press('Enter');
+    const recalled = page.locator('.exchange').last();
+    await expect(recalled.locator('.reply')).toContainText(/bookbinding/i, {timeout: 90000});
+    await recalled.locator('.receipt summary').click();
+    const passage = recalled
+      .locator('.receipt blockquote')
+      .filter({hasText: /bookbinding/i})
+      .first();
+    await expect(passage).toContainText('Assistant ·');
+    await page.keyboard.press('Meta+,');
+    await page.getByText('Your notebook', {exact: true}).click();
+    await page.getByRole('button', {name: 'Review local measures'}).click();
+    await expect(
+      page.getByRole('columnheader', {name: 'Rejected'}),
+    ).toBeVisible();
+    const currentReport = page.getByRole('table', {name: /Seven-day periods through/});
+    await expect(currentReport.getByRole('row').last()).toContainText(/of [1-9]\d* \(\d+(?:[.,]\d+)?%\)/);
+    await currentReport.screenshot({path: info.outputPath('two-weeks.png')});
+    await page.getByLabel('Two weeks ending').fill('2024-03-12');
+    await page.getByRole('button', {name: 'Apply', exact: true}).click();
+    const report = page.getByRole('table', {name: 'Seven-day periods through 2024-03-12'});
+    await expect(report.getByRole('row')).toHaveCount(3);
+    await expect(report.getByRole('cell', {name: '2024-02-28'})).toBeVisible();
+    await expect(report.getByRole('cell', {name: '2024-03-06'})).toBeVisible();
+    await expect(report.getByRole('cell', {name: 'No replies'})).toHaveCount(2);
+    const download = await rpc('exportNotebook');
+    try {
+      expect(
+        execFileSync('unzip', ['-p', download, 'records/note.json'], {
+          encoding: 'utf8',
+        }),
+      ).toContain('autumn exhibition');
+      expect(
+        execFileSync('unzip', ['-Z1', download], {encoding: 'utf8'}),
+      ).not.toContain('.sumi/');
+    } finally {
+      await rm(download);
+    }
+  } finally {
+    core.stdin.end();
   }
 });

@@ -647,6 +647,7 @@ fn real_local_reading() {
 #[test]
 #[ignore = "Uses only the installed local model and synthetic grading cases"]
 fn local_grading_anchors() {
+    let (_tmp, s) = notebook();
     let model = models::inventory()
         .into_iter()
         .find(|v| v["name"] == "llama3.2:3b")
@@ -667,7 +668,7 @@ fn local_grading_anchors() {
         ),
     ];
     for (q, guess, actual, hit) in cases {
-        let score = engine::grade(&model, q, guess, actual).unwrap();
+        let score = engine::grade(&s, &model, q, guess, actual).unwrap();
         println!("Anchor grade: {score} ({q})");
         assert_eq!(score >= 2, hit, "{q}");
     }

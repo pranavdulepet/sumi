@@ -341,9 +341,80 @@ enum ExportWindow {
     Backfill(i64),
 }
 
+// This local-only index includes opening and final messages, which are absent from
+// the assistant/human pairs used for blind evaluation.
+fn index_conversation(s: &Store, source: &str, c: &Value, window: ExportWindow) -> Res<()> {
+    let group = c["id"].as_str().or(c["uuid"].as_str()).unwrap_or("export");
+    let mut conn = s.db.lock().unwrap();
+    let tx = conn.transaction().msg()?;
+    {
+        let mut insert = tx
+            .prepare_cached("INSERT OR IGNORE INTO imported_messages VALUES(?,?,?,?,?)")
+            .msg()?;
+        let mut add = |stamp: &str, role: &str, body: String| -> Res<()> {
+            if !matches!(role, "user" | "assistant" | "human") || body.trim().is_empty() {
+                return Ok(());
+            }
+            match window {
+                ExportWindow::Recent(since) if !recent_reply(stamp, since) => return Ok(()),
+                ExportWindow::Backfill(since) if recent_reply(stamp, since) => return Ok(()),
+                _ => (),
+            }
+            let id = hash(&format!("{source}\0{group}\0{stamp}\0{role}\0{body}"));
+            if SECRET.is_match(&body) {
+                return Ok(());
+            }
+            insert
+                .execute(params![
+                    id,
+                    source,
+                    stamp,
+                    if role == "human" { "user" } else { role },
+                    body
+                ])
+                .msg()?;
+            Ok(())
+        };
+        if let Some(map) = c["mapping"].as_object() {
+            for m in chat_path(map, &c["current_node"]) {
+                if m["metadata"]["is_visually_hidden_from_conversation"] == true
+                    || m["metadata"]["is_user_system_message"] == true
+                    || m["recipient"].as_str().is_some_and(|r| r != "all")
+                {
+                    continue;
+                }
+                let date = m["create_time"]
+                    .as_f64()
+                    .and_then(|n| chrono::DateTime::from_timestamp(n as i64, 0))
+                    .map(|d| d.to_rfc3339())
+                    .unwrap_or_default();
+                add(
+                    &date,
+                    m["author"]["role"].as_str().unwrap_or(""),
+                    content(&m["content"]["parts"]),
+                )?;
+            }
+        } else {
+            for m in c["chat_messages"].as_array().into_iter().flatten() {
+                let body = m["text"]
+                    .as_str()
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| content(&m["content"]));
+                add(
+                    m["created_at"].as_str().unwrap_or(""),
+                    m["sender"].as_str().unwrap_or(""),
+                    body,
+                )?;
+            }
+        }
+    }
+    tx.commit().msg()
+}
 fn export(s: &Store, source: &str, v: &Value, window: ExportWindow) -> Res<(usize, bool)> {
     let mut n = 0;
     let mut deferred = false;
+    let mut older_messages = false;
     let mut record = |group: &str, stamp: &str, question: &str, reply: &str| -> Res<()> {
         match window {
             ExportWindow::Recent(since) if !recent_reply(stamp, since) => {
@@ -360,6 +431,21 @@ fn export(s: &Store, source: &str, v: &Value, window: ExportWindow) -> Res<(usiz
         .as_array()
         .ok_or("Expected a conversation export array.")?
     {
+        index_conversation(s, source, c, window)?;
+        if let ExportWindow::Recent(since) = window {
+            if let Some(ms) = c["chat_messages"].as_array() {
+                older_messages |= ms
+                    .iter()
+                    .any(|m| !recent_reply(m["created_at"].as_str().unwrap_or(""), since));
+            }
+            if let Some(map) = c["mapping"].as_object() {
+                older_messages |= map.values().any(|node| {
+                    node["message"]["create_time"]
+                        .as_f64()
+                        .is_some_and(|t| (t as i64) < since)
+                });
+            }
+        }
         let group = c["id"].as_str().or(c["uuid"].as_str()).unwrap_or("export");
         if let Some(map) = c["mapping"].as_object() {
             let mut previous = String::new();
@@ -401,7 +487,7 @@ fn export(s: &Store, source: &str, v: &Value, window: ExportWindow) -> Res<(usiz
             }
         }
     }
-    Ok((n, deferred))
+    Ok((n, deferred || older_messages))
 }
 pub fn conversation_file(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or("");
@@ -449,6 +535,15 @@ pub fn ingest_pass(s: &Store, source: &Value, first: bool) -> Res<(usize, bool)>
                 .unwrap_or(0)
         );
         let cursor = format!("cursor/{key}/{}", hash(&path.to_string_lossy()));
+        let cursor = if path
+            .extension()
+            .and_then(|v| v.to_str())
+            .is_some_and(|e| matches!(e, "json" | "zip"))
+        {
+            format!("{cursor}/messages")
+        } else {
+            cursor
+        };
         let saved = s.get(&cursor)?;
         if saved == fingerprint {
             continue;

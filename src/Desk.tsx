@@ -1,25 +1,39 @@
+import {SheetImage} from './SheetImage';
+import {Attachments, readFiles} from './Attachments';
+import {Sources} from './Onboarding';
+import {listen} from '@tauri-apps/api/event';
 import {ExportArrival} from './ExportArrival';
 import {useEffect, useMemo, useRef, useState} from 'react';
 import {type Row, type Action, day} from './api';
 import {useGhostInk} from './useGhostInk';
 import {Stroke} from './Ink';
+import {MemoryMark} from './MemoryMark';
+import {SearchResult} from './SearchResult';
+import {Reply} from './Reply';
 import {marginGoal, paragraphAt} from './margin';
 export function Desk({
   data,
   act,
   openSeal,
+  teach,
+  correctReply,
   onSave,
   record,
 }: {
   data: Row;
   act: Action;
   openSeal: () => void;
+  teach: () => void;
+  correctReply: (turn: Row) => void;
   record: Action;
   onSave: (id: string, text: string) => Promise<void>;
 }) {
   const [text, setText] = useState<string>(data.sheet),
     [error, setError] = useState(''),
-    [saved, setSaved] = useState(''),
+    [notice, setNotice] = useState(''),
+    [privateSheet, setPrivate] = useState(
+      data.sheets?.find((s: Row) => s.id === data.current)?.private === true,
+    ),
     [actual, setActual] = useState(''),
     [busy, setBusy] = useState(false),
     [caret, setCaret] = useState(0),
@@ -27,9 +41,129 @@ export function Desk({
     [settled, setSettled] = useState(''),
     [archive, showArchive] = useState(false),
     [breakOpen, open] = useState(false);
-  const rev = useRef(0);
+  const [files, setFiles] = useState<Row[]>([]);
+  const [shareFiles, share] = useState(false);
+  const [importing, openImport] = useState(false);
+  const [readingFile, reading] = useState(false);
+  const fileLock = useRef(false);
+  async function addFiles(list: File[]) {
+    if (fileLock.current || sending.current || !list.length) return;
+    fileLock.current = true;
+    reading(true);
+    setError('');
+    try {
+      const newFiles = await readFiles(list, 4 - files.length);
+      setFiles(v => [...v, ...newFiles]);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      fileLock.current = false;
+      reading(false);
+    }
+  }
+  const [partial, setPartial] = useState('');
+  const sending = useRef(false);
+  const pending = useRef<{text: string; id: string} | null>(null);
+  const turns: Row[] = data.chat?.turns || [];
+  const leaf = useRef<HTMLDivElement>(null);
+  const [reviewQuestion, review] = useState('');
+  async function send(approvedQuestion?: string) {
+    if (!text.trim() || sending.current || busy || fileLock.current) return;
+    sending.current = true;
+    setBusy(true);
+    setError('');
+    setPartial('');
+    if (pending.current?.text !== text)
+      pending.current = {text, id: crypto.randomUUID().replaceAll('-', '')};
+    let stop: (() => void) | undefined;
+    try {
+      if (
+        (
+          window as Window & {
+            __TAURI_INTERNALS__?: {transformCallback?: unknown};
+          }
+        ).__TAURI_INTERNALS__?.transformCallback
+      ) {
+        stop = await listen<{turn: string; delta: string}>(
+          'reply-delta',
+          event => {
+            if (event.payload.turn === pending.current?.id)
+              setPartial(v => v + event.payload.delta);
+          },
+        );
+      }
+      const result = await act('askSheet', {
+        approvedQuestion,
+        sheet: data.current,
+        turn: pending.current.id,
+        text,
+        private: privateSheet,
+        files,
+        shareFiles,
+      });
+      if (result?.reviewQuestion) {
+        review(result.reviewQuestion);
+        return;
+      }
+      review('');
+      const turn = pending.current.id;
+      requestAnimationFrame(() => {
+        const reply = leaf.current?.querySelector<HTMLElement>(
+          '[data-turn="' + turn + '"]',
+        );
+        if (reply) {
+          reply.focus({preventScroll: true});
+          reply.scrollIntoView({block: 'nearest'});
+        }
+      });
+      setFiles([]);
+      share(false);
+      setText('');
+      ink.dismiss();
+      setCaret(0);
+      pending.current = null;
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      stop?.();
+      setPartial('');
+      sending.current = false;
+      setBusy(false);
+    }
+  }
+  async function switchSheet(id?: string) {
+    setBusy(true);
+    try {
+      await act(id ? 'openSheet' : 'newSheet', id ? {id} : {});
+      showArchive(false);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  useEffect(() => {
+    const sheets = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        showArchive(v => !v);
+      }
+    };
+    window.addEventListener('keydown', sheets);
+    return () => window.removeEventListener('keydown', sheets);
+  }, []);
   const sealed = data.sealed;
-  const ink = useGhostInk(text, data.current, !!sealed, record);
+  const ink = useGhostInk(
+    text,
+    data.current,
+    !!sealed ||
+      (data.model?.runtime === 'ChatGPT' &&
+        (privateSheet ||
+          data.chat?.private ||
+          data.skills?.some((s: Row) => s.private))),
+    record,
+    data.model?.runtime === 'ChatGPT',
+  );
   const {field, ghost} = ink;
   const waiting: Row[] = data.log.filter((v: Row) => v.status === 'waiting');
   const names = [...new Set(waiting.map(v => v.name).filter(Boolean))];
@@ -43,39 +177,20 @@ export function Desk({
           : '';
   const verdict = data.scores.find((r: Row) => r.id === sealed?.id);
   function change(v: string) {
-    const seq = ++rev.current;
+    review('');
     setText(v);
-    setSaved('Saving…');
-    void onSave(data.current, v)
-      .then(() => {
-        if (seq === rev.current) setSaved('Saved');
-      })
-      .catch(e => setError(String(e)));
+    void onSave(data.current, v).catch(e => setError(String(e)));
   }
   useEffect(() => {
     const el = field.current;
     if (el) {
       el.style.height = 'auto';
-      el.style.height = Math.max(150, el.scrollHeight) + 'px';
+      el.style.height =
+        Math.max(turns.length ? 80 : 135, el.scrollHeight) + 'px';
     }
-  }, [text]);
+  }, [text, turns.length]);
   const decision =
     /\b(should i|should we|whether|decide|do i|do we|or should)\b/i.test(text);
-  useEffect(() => {
-    if (!decision || !data.model || sealed || !text.trim().endsWith('?'))
-      return;
-    let live = true;
-    const timer = setTimeout(() => {
-      if (live)
-        void act('sealGuess', {id: data.current}).catch(e =>
-          setError(String(e)),
-        );
-    }, 2100);
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [text, decision, data.current, sealed?.id, data.model?.name]);
   const paragraph = paragraphAt(text, caret);
   useEffect(() => {
     if (!paragraph.trim() || composing || data.marginOff) {
@@ -98,212 +213,522 @@ export function Desk({
       ? candidate
       : undefined;
   return (
-    <main className="page desk">
-      <div className="folio">
-        {new Date().toLocaleDateString(undefined, {
-          weekday: 'long',
-          day: 'numeric',
-          month: 'long',
-        })}
-      </div>
-      <div className="heading-line">
-        <h1>The Desk</h1>
-        <button className="quiet small" onClick={() => showArchive(!archive)}>
-          {archive ? 'Close sheets' : 'Sheets'}{' '}
-          <span aria-hidden="true">⌄</span>
+    <main
+      className="page desk"
+      onDragOver={e => {
+        if (e.dataTransfer.types.includes('Files')) e.preventDefault();
+      }}
+      onDrop={e => {
+        if (e.dataTransfer.files.length) {
+          e.preventDefault();
+          void addFiles(Array.from(e.dataTransfer.files));
+        }
+      }}
+    >
+      <aside className="desk-margin">
+        <time>
+          {new Date().toLocaleDateString(undefined, {
+            month: 'long',
+            day: 'numeric',
+          })}
+        </time>
+        {!sealed && (
+          <button
+            className="ink-action ask"
+            disabled={busy || readingFile || !text.trim()}
+            onClick={() => send()}
+          >
+            <Stroke points={data.mark} />
+            {busy ? 'Thinking…' : 'Ask Sumi'}
+          </button>
+        )}
+        <button
+          onClick={() =>
+            turns.length ? correctReply(turns[turns.length - 1]) : teach()
+          }
+        >
+          {turns.length ? 'Correct this reply' : 'Teach a correction'}
         </button>
-      </div>
-      {archive && (
-        <div className="archive rows">
-          <button onClick={() => act('newSheet')}>＋ New sheet</button>
-          {data.sheets.map((s: Row) => (
+        <button onClick={() => showArchive(!archive)}>
+          {archive ? 'Close sheets' : 'Sheets'} <small>⌘O</small>
+        </button>
+        {!data.chat?.networkClosed && (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={privateSheet}
+              disabled={busy}
+              onChange={async e => {
+                const value = e.target.checked;
+                setPrivate(value);
+                try {
+                  await act('sheetPrivacy', {id: data.current, value});
+                } catch (err) {
+                  setPrivate(!value);
+                  setError(String(err));
+                }
+              }}
+            />
+            {data.model?.runtime === 'ChatGPT'
+              ? 'Keep this sheet local'
+              : 'Keep this sheet offline'}
+          </label>
+        )}
+        {margin && (
+          <aside className="margin-note" aria-label="Goal from your Scroll">
+            <small>
+              From your Scroll{margin.updated && ' · ' + day(margin.updated)}
+            </small>
+            {margin.text}{' '}
             <button
-              key={s.id}
-              className="row"
-              onClick={() =>
-                act('openSheet', {id: s.id}).then(() => showArchive(false))
-              }
+              aria-label="Dismiss margin note"
+              title="Quiet all margin notes for 24 hours"
+              onClick={() => {
+                void act('dismissMargin', {id: margin.id})
+                  .then(() => setNotice('Margin notes quiet for 24 hours.'))
+                  .catch(e => setError(String(e)));
+              }}
             >
-              <span>{s.title}</span>
-              <small>{day(s.date)}</small>
+              ×
             </button>
-          ))}
-        </div>
-      )}
-      <ExportArrival request={data.requestedExport} act={act} desk />
-      {waiting.length > 0 && (
-        <button className="waiting" onClick={openSeal}>
-          {waiting.length} {waiting.length === 1 ? 'question' : 'questions'}
-          {from && ' from ' + from} {waiting.length === 1 ? 'is' : 'are'}{' '}
-          waiting for you ↗
-        </button>
-      )}
-      <div className="writing">
-        {ghost && (
-          <div className="ghost-layer" aria-hidden="true">
-            <span>{text}</span>
-            {/\s$/u.test(text) ? '' : ' '}
-            {ghost}
+          </aside>
+        )}
+      </aside>
+      <div className="desk-leaf" ref={leaf}>
+        {archive && (
+          <div className="archive rows">
+            <button disabled={busy} onClick={() => switchSheet()}>
+              ＋ New sheet
+            </button>
+            {data.sheets.map((s: Row) => (
+              <button
+                key={s.id}
+                className="row"
+                disabled={busy}
+                onClick={() => switchSheet(s.id)}
+              >
+                <span>{s.title}</span>
+                <small>{day(s.date)}</small>
+              </button>
+            ))}
           </div>
         )}
-        <textarea
-          aria-label="Desk sheet"
-          autoFocus
-          placeholder="Begin here…"
-          ref={field}
-          spellCheck
-          value={text}
-          {...ink.events}
-          onSelect={e => {
-            ink.events.onSelect();
-            setCaret(e.currentTarget.selectionStart);
-          }}
-          onCompositionStart={() => {
-            setComposing(true);
-            ink.events.onCompositionStart();
-          }}
-          onCompositionEnd={() => {
-            setComposing(false);
-            ink.events.onCompositionEnd();
-          }}
-          onChange={e => {
-            setCaret(e.target.selectionStart);
-            ink.edit(e.target.value);
-            change(e.target.value);
-          }}
-          onKeyDown={e => {
-            if (e.nativeEvent.isComposing) return;
-            if (
-              e.key === 'Tab' &&
-              !e.shiftKey &&
-              !e.altKey &&
-              !e.ctrlKey &&
-              !e.metaKey
-            ) {
-              const next = ink.accept();
-              if (next !== null) {
-                e.preventDefault();
-                change(next);
+        <ExportArrival request={data.requestedExport} act={act} desk />
+        {waiting.length > 0 && (
+          <button className="waiting" onClick={openSeal}>
+            {waiting.length} {waiting.length === 1 ? 'question' : 'questions'}
+            {from && ' from ' + from} {waiting.length === 1 ? 'is' : 'are'}{' '}
+            waiting for you ↗
+          </button>
+        )}
+        {turns.map(t => (
+          <article
+            className="exchange"
+            key={t.id}
+            tabIndex={-1}
+            aria-label="Conversation turn"
+            data-turn={t.id}
+          >
+            <p className="asked">{t.question}</p>
+            {!!t.files?.length && (
+              <small>{t.files.map((f: Row) => f.name).join(' · ')}</small>
+            )}
+            {t.files
+              ?.filter((f: Row) => f.preview)
+              .map((f: Row, i: number) => (
+                <img
+                  className="attachment-preview"
+                  src={'data:image/jpeg;base64,' + f.preview}
+                  alt={f.name}
+                  key={i}
+                />
+              ))}
+            <small>Sumi</small>
+            <Reply
+              checklist={/checklist|check boxes|checkboxes/i.test(t.question)}
+              checks={t.checks}
+              onCheck={(item, value) => {
+                return act('checkItem', {
+                  sheet: data.current,
+                  turn: t.id,
+                  item,
+                  value,
+                }).catch(e => setError(String(e)));
+              }}
+              text={
+                t.usedMemory
+                  ? t.reply.replace(/^(.*?)([.!?])(?=\s|$)/, '$1$2 [[m1]]')
+                  : t.reply
               }
-            } else if (e.key === 'Escape') ink.dismiss();
-          }}
-        />
-      </div>
-      {ghost && (
-        <p className="small" aria-live="polite">
-          <kbd>Tab</kbd> accepts the light ink
-          <span className="sr">: {ghost}</span>
-        </p>
-      )}
-      {sealed ? (
-        <div className="seal-block">
-          <div className="inline">
-            <button
-              className="seal-button"
-              aria-label="Open sealed guess"
-              onClick={() => open(!breakOpen)}
-            >
-              <Stroke points={data.mark} />
-            </button>
-            <span>
-              {sealed.actual ? 'Opened guess' : 'Sealed guess'}
-              <small>
-                {sealed.actual
-                  ? 'Your decision is recorded.'
-                  : 'Open after you decide.'}
-              </small>
-            </span>
-          </div>
-          {(breakOpen || sealed.actual) &&
-            (!sealed.actual ? (
-              <form
-                onSubmit={async e => {
-                  e.preventDefault();
-                  await act('breakSeal', {id: sealed.id, actual});
-                  setActual('');
-                }}
+              mark={index => {
+                const note = t.usedMemory
+                  ? index === 0
+                    ? t.usedMemory
+                    : null
+                  : t.notes?.[index];
+                return (
+                  note && (
+                    <MemoryMark
+                      note={note}
+                      current={(note.kind === 'entry'
+                        ? data.entries
+                        : data.notes
+                      )?.find(
+                        (n: Row) => n.id === note.id && n.text === note.text,
+                      )}
+                      act={act}
+                    />
+                  )
+                );
+              }}
+            />
+            <SheetImage turn={t} sheet={data.current} act={act} />
+            <SearchResult turn={t} sheet={data.current} act={act} />
+            {t.timeline?.length > 0 && (
+              <ol
+                className="memory-timeline"
+                aria-label={
+                  t.archiveLookup
+                    ? 'Earlier conversation excerpts'
+                    : 'Your earlier instructions'
+                }
               >
-                <label>
-                  Your decision
-                  <input
-                    required
-                    value={actual}
-                    onChange={e => setActual(e.target.value)}
-                    autoFocus
-                  />
-                </label>
-                <button className="primary">Break the seal</button>
-              </form>
-            ) : (
-              <>
-                <p className="quote">{sealed.guess}</p>
-                <p className="muted">You decided · {sealed.actual}</p>
-                {verdict ? (
-                  <p className="small">
-                    {verdict.grade >= 2 ? 'A match' : 'A miss'} · in the Mirror
-                  </p>
-                ) : (
-                  <div className="inline">
-                    <button
-                      onClick={() =>
-                        act('verdict', {id: sealed.id, right: true})
+                {t.timeline.map((p: Row, i: number) => (
+                  <li key={i}>
+                    <time dateTime={p.when}>
+                      {p.role === 'assistant' ? 'Assistant · ' : 'You · '}
+                      {p.approximate ? 'Sheet dated ' : ''}
+                      {new Date(p.when).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                      })}
+                    </time>
+                    <p>{p.words}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
+            {t.worksheet && (
+              <dl className="calculations" aria-label="Working">
+                {t.tools
+                  .filter((v: Row) => v.value != null || v.date)
+                  .map((v: Row) => (
+                    <div key={v.tool}>
+                      <dt>{v.tool === 'Calendar' ? 'Date' : 'Calculation'}</dt>
+                      <dd>{v.display}</dd>
+                    </div>
+                  ))}
+              </dl>
+            )}
+            <details className="receipt">
+              <summary>Behind this reply</summary>
+              {t.id === turns.at(-1)?.id &&
+                !t.image &&
+                !t.imagePrompt &&
+                !t.web &&
+                !t.archiveLookup &&
+                !t.timeline?.length && (
+                  <button
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await act('regenerate', {
+                          sheet: data.current,
+                          turn: t.id,
+                          attempt: crypto.randomUUID().replaceAll('-', ''),
+                        });
+                      } catch (e) {
+                        setError(String(e));
+                      } finally {
+                        setBusy(false);
                       }
-                    >
-                      That was right
-                    </button>
-                    <button
-                      onClick={() =>
-                        act('verdict', {id: sealed.id, right: false})
-                      }
-                    >
-                      It missed
-                    </button>
-                  </div>
+                    }}
+                  >
+                    Try this answer again
+                  </button>
                 )}
-              </>
-            ))}
+
+              <p>
+                {t.timeline?.length
+                  ? 'Quoted from your notebook'
+                  : t.runtime + ' · ' + t.model}
+              </p>
+              {t.selector &&
+                (t.timeline?.length > 0 ||
+                  t.selector !== t.model ||
+                  t.selectorRuntime !== t.runtime) && (
+                  <p>
+                    Selected by {t.selectorRuntime} · {t.selector}
+                  </p>
+                )}
+              {t.rules.map((r: string) => (
+                <blockquote key={r}>{r}</blockquote>
+              ))}
+              {t.skill && <p>Skill · {t.skill}</p>}
+              {(t.tools || []).map((tool: Row) => (
+                <div key={tool.tool}>
+                  <p>
+                    {tool.tool} · {tool.display}
+                  </p>
+                  {tool.passages?.map((p: Row, i: number) => (
+                    <blockquote key={i}>
+                      <small>
+                        {p.role === 'assistant' ? 'Assistant · ' : 'You · '}
+                        {p.approximate ? 'Sheet dated ' : ''}
+                        {new Date(p.when).toLocaleString()}
+                      </small>
+                      {p.words}
+                    </blockquote>
+                  ))}
+                </div>
+              ))}
+            </details>
+          </article>
+        ))}
+        {partial && busy && (
+          <article aria-label="Answer in progress">
+            <small>Sumi</small>
+            <Reply text={partial} />
+          </article>
+        )}
+        {reviewQuestion && (
+          <aside className="import-offer">
+            <p>
+              This question is sensitive and there is no local model connected.
+              Send only the following words to OpenAI?
+            </p>
+            <blockquote>{reviewQuestion}</blockquote>
+            <button disabled={busy} onClick={() => send(reviewQuestion)}>
+              Send these words once
+            </button>
+            <button onClick={() => review('')}>Keep on my Mac</button>
+          </aside>
+        )}
+        <div className="writing">
+          {ghost && (
+            <div className="ghost-layer" aria-hidden="true">
+              <span>{text}</span>
+              {/\s$/u.test(text) ? '' : ' '}
+              {ghost}
+            </div>
+          )}
+          <textarea
+            aria-label="Desk sheet"
+            aria-keyshortcuts="Enter Shift+Enter"
+            autoFocus
+            placeholder={turns.length ? 'And then…' : 'What’s on your mind?'}
+            disabled={busy}
+            ref={field}
+            spellCheck
+            value={text}
+            {...ink.events}
+            onSelect={e => {
+              ink.events.onSelect();
+              setCaret(e.currentTarget.selectionStart);
+            }}
+            onCompositionStart={() => {
+              setComposing(true);
+              ink.events.onCompositionStart();
+            }}
+            onCompositionEnd={() => {
+              setComposing(false);
+              ink.events.onCompositionEnd();
+            }}
+            onChange={e => {
+              setCaret(e.target.selectionStart);
+              ink.edit(e.target.value);
+              change(e.target.value);
+            }}
+            onKeyDown={e => {
+              if (e.nativeEvent.isComposing) return;
+              if (!e.shiftKey && !e.altKey && e.key === 'Enter' && !sealed) {
+                e.preventDefault();
+                void send();
+                return;
+              }
+              if (
+                e.key === 'Tab' &&
+                !e.shiftKey &&
+                !e.altKey &&
+                !e.ctrlKey &&
+                !e.metaKey
+              ) {
+                const next = ink.accept();
+                if (next !== null) {
+                  e.preventDefault();
+                  change(next);
+                }
+              } else if (e.key === 'Escape') ink.dismiss();
+            }}
+          />
         </div>
-      ) : (
-        decision && (
+
+        {!sealed && (
+          <Attachments
+            files={files}
+            disabled={busy || readingFile}
+            add={addFiles}
+            remove={i => setFiles(v => v.filter((_, k) => k !== i))}
+          />
+        )}
+        {!privateSheet &&
+          data.model?.runtime === 'ChatGPT' &&
+          (files.length > 0 || turns.some(t => t.files?.length)) && (
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={shareFiles}
+                onChange={e => share(e.target.checked)}
+              />
+              Share file excerpts and image previews with OpenAI for this reply
+            </label>
+          )}
+        {readingFile && <small role="status">Reading on this Mac…</small>}
+        {data.importOffer === data.current && !importing && (
+          <aside className="import-offer">
+            <p>Want me to read your past ChatGPT or Claude conversations?</p>
+            <button
+              onClick={async () => {
+                await act('dismissImportOffer');
+                openImport(true);
+              }}
+            >
+              Read past chats
+            </button>
+            <button onClick={() => act('dismissImportOffer')}>
+              Maybe later
+            </button>
+          </aside>
+        )}
+        {importing && (
+          <section>
+            <Sources
+              sources={data.sources}
+              request={data.requestedExport}
+              act={act}
+            />
+            <button
+              onClick={async () => {
+                await act('read');
+                openImport(false);
+              }}
+            >
+              Read selected sources
+            </button>
+            <button onClick={() => openImport(false)}>Close</button>
+          </section>
+        )}
+        {ghost && (
+          <p className="small" aria-live="polite">
+            <kbd>Tab</kbd> accepts the light ink
+            <span className="sr">: {ghost}</span>
+          </p>
+        )}
+        {sealed ? (
+          <div className="seal-block">
+            <div className="inline">
+              <button
+                className="seal-button"
+                aria-label="Open sealed guess"
+                onClick={() => open(!breakOpen)}
+              >
+                <Stroke points={data.mark} />
+              </button>
+              <span>
+                {sealed.actual ? 'Opened guess' : 'Sealed guess'}
+                <small>
+                  {sealed.actual
+                    ? 'Your decision is recorded.'
+                    : 'Open after you decide.'}
+                </small>
+              </span>
+            </div>
+            {(breakOpen || sealed.actual) &&
+              (!sealed.actual ? (
+                <form
+                  onSubmit={async e => {
+                    e.preventDefault();
+                    await act('breakSeal', {id: sealed.id, actual});
+                    setActual('');
+                  }}
+                >
+                  <label>
+                    Your decision
+                    <input
+                      required
+                      value={actual}
+                      onChange={e => setActual(e.target.value)}
+                      autoFocus
+                    />
+                  </label>
+                  <button className="primary">Break the seal</button>
+                </form>
+              ) : (
+                <>
+                  <p className="quote">{sealed.guess}</p>
+                  <p className="muted">You decided · {sealed.actual}</p>
+                  {verdict ? (
+                    <p className="small">
+                      {verdict.grade >= 2 ? 'A match' : 'A miss'} · in the
+                      Mirror
+                    </p>
+                  ) : (
+                    <div className="inline">
+                      <button
+                        onClick={() =>
+                          act('verdict', {id: sealed.id, right: true})
+                        }
+                      >
+                        That was right
+                      </button>
+                      <button
+                        onClick={() =>
+                          act('verdict', {id: sealed.id, right: false})
+                        }
+                      >
+                        It missed
+                      </button>
+                    </div>
+                  )}
+                </>
+              ))}
+          </div>
+        ) : (
+          decision && (
+            <button
+              className="text-action"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await act('sealGuess', {id: data.current});
+                } catch (e) {
+                  setError(String(e));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? 'Folding the guess…' : 'Seal a guess'}
+            </button>
+          )
+        )}
+        <div aria-live="polite" className="small quiet save-state">
+          {error || notice}
+        </div>
+        {sealed && (
           <button
             className="text-action"
             disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                await act('sealGuess', {id: data.current});
-              } catch (e) {
-                setError(String(e));
-              } finally {
-                setBusy(false);
-              }
-            }}
+            onClick={() => switchSheet()}
           >
-            {busy ? 'Folding the guess…' : 'Seal a guess'}
+            Start a conversation
           </button>
-        )
-      )}
-      {margin && (
-        <aside className="margin-note" aria-label="Goal from your Scroll">
-          <small>
-            From your Scroll{margin.updated && ' · ' + day(margin.updated)}
-          </small>
-          {margin.text}{' '}
-          <button
-            aria-label="Dismiss margin note"
-            title="Quiet all margin notes for 24 hours"
-            onClick={() => {
-              void act('dismissMargin', {id: margin.id})
-                .then(() => setSaved('Margin notes quiet for 24 hours.'))
-                .catch(e => setError(String(e)));
-            }}
-          >
-            ×
-          </button>
-        </aside>
-      )}
-      <div aria-live="polite" className="small quiet save-state">
-        {error || saved}
+        )}
       </div>
     </main>
   );
