@@ -34,13 +34,25 @@ char *sumi_entities(const char *input) {
  }
 }
 void sumi_free(char *p){free(p);}
-int sumi_semantic(const char *input,float *result,int length){
- @autoreleasepool{
-  static NLEmbedding *embedding;static dispatch_once_t once;dispatch_once(&once,^{embedding=[NLEmbedding sentenceEmbeddingForLanguage:NLLanguageEnglish];});
-  if(!embedding)return 0;NSString *s=[NSString stringWithUTF8String:input];NSArray<NSNumber*> *vec=[embedding vectorForString:s];
-  if(!vec.count)return 0;
-  for(NSUInteger i=0;i<vec.count;i++){result[i%length]+=[vec[i] floatValue];}return 1;
- }
+int sumi_semantic(const char *input, float *result, int length) {
+    @autoreleasepool {
+        static NLEmbedding *embedding;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            embedding = [NLEmbedding sentenceEmbeddingForLanguage:NLLanguageEnglish];
+        });
+        if (!embedding || length <= 0) return 0;
+        NSString *text = [NSString stringWithUTF8String:input];
+        // A notebook import and a Desk request can share the same native model.
+        @synchronized (embedding) {
+            NSArray<NSNumber *> *vector = [embedding vectorForString:text];
+            if (!vector.count) return 0;
+            for (NSUInteger i = 0; i < vector.count; i++) {
+                result[i % length] += vector[i].floatValue;
+            }
+        }
+        return 1;
+    }
 }
 
 static dispatch_group_t sumi_notification_permission(void) {
