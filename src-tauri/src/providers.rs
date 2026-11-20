@@ -438,16 +438,83 @@ fn verify(jwt: &str, client: &str, nonce: &str) -> Res<Value> {
         )
         .map_err(|_| "Identity signature did not verify.")?;
     let claims: Value = serde_json::from_slice(&B64.decode(parts[1]).msg()?).msg()?;
-    if claims["iss"] != "https://auth.openai.com"
-        || claims["aud"] != client
-        || claims["nonce"] != nonce
-        || claims["exp"].as_i64().unwrap_or(0) <= chrono::Utc::now().timestamp()
-        || !claims["sub"].is_string()
-    {
-        return Err("The account identity could not be verified.".into());
-    }
+    verify_claims(&claims, client, nonce, chrono::Utc::now().timestamp())?;
     Ok(claims)
 }
+
+fn verify_claims(claims: &Value, client: &str, nonce: &str, now: i64) -> Res<()> {
+    if claims["iss"] != "https://auth.openai.com" {
+        return Err("The sign-in reply came from an unexpected issuer.".into());
+    }
+    // OpenAI can encode the issued app ID as a string or a one-element OIDC
+    // audience list. Sumi trusts only its own client registration.
+    let audience = &claims["aud"];
+    let for_this_app = audience.as_str() == Some(client)
+        || audience
+            .as_array()
+            .is_some_and(|ids| matches!(ids.as_slice(), [id] if id.as_str() == Some(client)));
+    if !for_this_app
+        || claims
+            .get("azp")
+            .is_some_and(|party| party.as_str() != Some(client))
+    {
+        return Err(
+            "OpenAI’s reply was issued to a different app registration. Sign in again.".into(),
+        );
+    }
+    if claims["nonce"].as_str() != Some(nonce) {
+        return Err(
+            "OpenAI’s reply did not match this sign-in attempt. Start again in Sumi.".into(),
+        );
+    }
+    if claims["exp"].as_i64().is_none_or(|expires| expires <= now) {
+        return Err(
+            "The OpenAI sign-in reply expired. Check your Mac’s clock and try again.".into(),
+        );
+    }
+    if claims["sub"].as_str().is_none_or(str::is_empty) {
+        return Err("OpenAI’s reply did not identify an account.".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    #[test]
+    fn oidc_checks_the_registration_in_both_supported_audience_forms() {
+        let client = "oaiapp_example";
+        let nonce = "single-attempt";
+        let now = 100;
+        let claims = json!({"iss":"https://auth.openai.com", "aud":[client], "sub":"account", "exp":101, "nonce":nonce});
+        assert!(verify_claims(&claims, client, nonce, now).is_ok());
+        let mut scalar = claims.clone();
+        scalar["aud"] = json!(client);
+        scalar["azp"] = json!(client);
+        assert!(verify_claims(&scalar, client, nonce, now).is_ok());
+        for (field, invalid) in [
+            ("aud", json!("another")),
+            ("aud", json!(["another"])),
+            ("aud", json!([])),
+            ("aud", json!([client, "untrusted"])),
+            ("aud", Value::Null),
+            ("azp", json!("another")),
+            ("nonce", json!("earlier")),
+            ("iss", json!("https://example.org")),
+            ("sub", json!("")),
+            ("exp", json!(now)),
+            ("exp", Value::Null),
+        ] {
+            let mut changed = claims.clone();
+            changed[field] = invalid;
+            assert!(
+                verify_claims(&changed, client, nonce, now).is_err(),
+                "accepted invalid {field}"
+            );
+        }
+    }
+}
+
 pub fn oauth(s: &Store, kind: &str, primary: bool) -> Res<Value> {
     let plan = kind == "ChatGPT";
     if !plan && kind != "OpenRouter" {
