@@ -10,7 +10,7 @@ On macOS 14 or later, unzip Sumi and move it to Applications. The app uses an ad
 
 Choose **Continue with ChatGPT** to connect an eligible plan, or **Think on this Mac instead** to use a local model. Draw a stroke for your seal, then write on the open sheet. Return sends. Shift-Return adds a line. **Sheets** (⌘O) reopens a conversation or starts a new one. Importing earlier conversations is optional.
 
-Try telling Sumi “I live in Boston. On weekends I love hands-on printmaking workshops.” Open a fresh sheet and ask “What should I do this weekend?” Sumi resolves the weekend on your Mac, shows the public search query, and uses Exa’s keyless search endpoint when you click **Search the web**. If it needs a city, it asks. A dated venue excerpt accompanies the recommendation when available. Check **Automatically look up weekend listings** in Settings to skip the query preview for future weekend plans.
+Try telling Sumi “I live in Boston. On weekends I love hands-on printmaking workshops.” Open a fresh sheet and ask “What should I do this weekend?” Sumi resolves the weekend on your Mac, shows the public search query, and uses Exa’s keyless search endpoint when you click **Search the web**. If it needs a city, it asks. Sumi reads venue pages, checks for the requested city and dates, and screens out listings marked sold out, cancelled or past their registration deadline. A dated excerpt accompanies the recommendation when available. Check **Automatically look up weekend listings** in Settings to skip the query preview for future weekend plans.
 
 ## Memory you can inspect
 

@@ -93,6 +93,7 @@ pub fn prepare(
         return Some(json!({"status":"private"}));
     }
     let mut dates = Vec::new();
+    let mut city_name = None;
     let query = if is_outing {
         let supplied = lower
             .rfind(" in ")
@@ -113,6 +114,7 @@ pub fn prepare(
         else {
             return Some(json!({"status":"place"}));
         };
+        city_name = Some(place.to_owned());
         let (start, end) = weekend(day);
         dates.extend([start, end]);
         // Only broad public categories can be drawn from personal notes. Ranking happens afterwards.
@@ -170,7 +172,7 @@ pub fn prepare(
     if query.len() > 360 || local::sensitive(&query) || sources::audit(&query).is_none() {
         return Some(json!({"status":"private"}));
     }
-    Some(json!({"status":"ready","query":query,"outing":is_outing,"dates":dates}))
+    Some(json!({"status":"ready","query":query,"outing":is_outing,"dates":dates,"city":city_name}))
 }
 pub fn introduction(web: &Value) -> &'static str {
     match web["status"].as_str() {
@@ -188,9 +190,8 @@ pub fn public_url(raw: &str) -> bool {
             && u.password().is_none()
     })
 }
-fn parse(raw: &str) -> Res<Vec<Value>> {
-    let mut sources = vec![];
-    let mut seen = HashSet::new();
+fn blocks(raw: &str) -> Res<Vec<String>> {
+    let mut blocks = Vec::new();
     for line in raw
         .lines()
         .filter_map(|l| l.strip_prefix("data:").map(str::trim))
@@ -205,42 +206,51 @@ fn parse(raw: &str) -> Res<Vec<Value>> {
             let Some(text) = item["text"].as_str() else {
                 continue;
             };
-            for chunk in text.split("\n---\n") {
-                let mut lines = chunk.trim().lines();
-                let Some(title) = lines.next().and_then(|l| l.strip_prefix("Title: ")) else {
-                    continue;
-                };
-                let Some(url) = lines
-                    .next()
-                    .and_then(|l| l.strip_prefix("URL: "))
-                    .map(str::trim)
-                else {
-                    continue;
-                };
-                if !public_url(url) || !seen.insert(url.to_owned()) || title.trim().is_empty() {
-                    continue;
-                }
-                let content = lines
-                    .skip_while(|l| !matches!(l.trim(), "Highlights:" | "Text:" | "Content:"))
-                    .skip(1)
-                    .filter(|l| !l.trim().is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                sources.push(json!({"title":title.trim().chars().take(180).collect::<String>(),"url":url,"excerpt":content.chars().take(2600).collect::<String>()}));
-                if sources.len() == 5 {
-                    return Ok(sources);
-                }
+            blocks.push(text.to_owned());
+        }
+    }
+    Ok(blocks)
+}
+
+fn parse(raw: &str) -> Res<Vec<Value>> {
+    let mut sources = Vec::new();
+    let mut seen = HashSet::new();
+    for text in blocks(raw)? {
+        for chunk in text.split("\n---\n") {
+            let mut lines = chunk.trim().lines();
+            let Some(title) = lines.next().and_then(|l| l.strip_prefix("Title: ")) else {
+                continue;
+            };
+            let Some(url) = lines
+                .next()
+                .and_then(|l| l.strip_prefix("URL: "))
+                .map(str::trim)
+            else {
+                continue;
+            };
+            if !public_url(url) || !seen.insert(url.to_owned()) || title.trim().is_empty() {
+                continue;
+            }
+            let content = lines
+                .skip_while(|l| !matches!(l.trim(), "Highlights:" | "Text:" | "Content:"))
+                .skip(1)
+                .filter(|l| !l.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            sources.push(json!({"title":title.trim().chars().take(180).collect::<String>(),"url":url,"excerpt":content.chars().take(2600).collect::<String>()}));
+            if sources.len() == 8 {
+                return Ok(sources);
             }
         }
     }
     Ok(sources)
 }
-fn search(query: &str) -> Res<Vec<Value>> {
+fn request(tool: &str, arguments: Value) -> Res<String> {
     let agent = ureq::AgentBuilder::new()
         .redirects(0)
         .timeout(Duration::from_secs(22))
         .build();
-    let response=agent.post("https://mcp.exa.ai/mcp").set("Accept","application/json, text/event-stream").send_json(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"web_search_exa","arguments":{"query":query,"numResults":5,"objective":"Find primary sources that directly answer this query. For events prioritize official venue pages that explicitly list the requested dates, activities and visiting details."}}})).map_err(|_|"I couldn’t reach web search. Check your connection and try again.".to_owned())?;
+    let response=agent.post("https://mcp.exa.ai/mcp").set("Accept","application/json, text/event-stream").send_json(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":tool,"arguments":arguments}})).map_err(|_|"I couldn’t reach web search. Check your connection and try again.".to_owned())?;
     let mut body = String::new();
     response
         .into_reader()
@@ -250,7 +260,75 @@ fn search(query: &str) -> Res<Vec<Value>> {
     if body.len() > 512_000 {
         return Err("The search response was too large. Try a narrower question.".into());
     }
-    parse(&body)
+    Ok(body)
+}
+
+fn search(query: &str, outing: bool) -> Res<Vec<Value>> {
+    parse(&request(
+        "web_search_exa",
+        json!({"query":query,"numResults":if outing{8}else{5},"objective":"Find primary sources that directly answer this query. For events prioritize venues IN the requested city. Avoid destinations that require a day trip. Include municipal or major museum daily calendars with walk-in activities, and individual venue pages for these dates with open registration. Exclude sold-out events, expired deadlines and cancelled classes."}),
+    )?)
+}
+
+fn available_pages(raw: &str, results: &[Value], today: NaiveDate) -> Res<Vec<Value>> {
+    static DEADLINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)(?:registration (?:closes|ends|deadline)|register by)[: ]+([a-z]+) (\d{1,2})(?:, (20\d{2}))?").unwrap()
+    });
+    let mut verified = Vec::new();
+    for block in blocks(raw)? {
+        let lines: Vec<_> = block.lines().collect();
+        let starts: Vec<_> = (1..lines.len())
+            .filter(|i| lines[i - 1].starts_with("# ") && lines[*i].starts_with("URL: "))
+            .collect();
+        for (j, &start) in starts.iter().enumerate() {
+            let url = lines[start].trim_start_matches("URL: ").trim();
+            let Some(page) = results.iter().find(|p| p["url"] == url) else {
+                continue;
+            };
+            let end = starts.get(j + 1).map_or(lines.len(), |v| v - 1);
+            let body = lines[start + 1..end].join("\n");
+            let lower = format!("{} {}", page["title"], body).to_lowercase();
+            let unavailable = [
+                "sold out",
+                "sold-out",
+                "cancelled",
+                "canceled",
+                "currently full",
+                "registration closed",
+                "registration is closed",
+                "fully booked",
+                "waitlist only",
+            ]
+            .iter()
+            .any(|v| lower.contains(v));
+            let too_late = DEADLINE.captures_iter(&lower).any(|c| {
+                let year = c
+                    .get(3)
+                    .map(|v| v.as_str().to_owned())
+                    .unwrap_or_else(|| today.format("%Y").to_string());
+                let raw = format!("{} {} {}", &c[1], &c[2], year);
+                ["%B %d %Y", "%b %d %Y"]
+                    .iter()
+                    .filter_map(|f| NaiveDate::parse_from_str(&raw, f).ok())
+                    .any(|d| d < today)
+            });
+            if unavailable || too_late || body.trim().len() < 35 {
+                continue;
+            }
+            let mut p = page.clone();
+            p["excerpt"] = json!(body
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .chars()
+                .take(5900)
+                .collect::<String>());
+            verified.push(p);
+        }
+    }
+    Ok(verified)
 }
 
 fn short_quote(line: &str) -> String {
@@ -266,7 +344,7 @@ fn display_lines(page: &Value) -> Vec<String> {
         .as_str()
         .unwrap_or("")
         .lines()
-        .map(|s| s.trim_matches(|c: char| c.is_whitespace() || c == '#' || c == '*'))
+        .map(|s| s.trim_matches(|c: char| c.is_whitespace() || matches!(c, '#' | '*' | '|')))
         .filter(|s| s.len() > 4 && !s.contains("://") && !s.starts_with("Photo by"))
         .take(36)
         .map(|s| s.chars().take(240).collect())
@@ -375,12 +453,66 @@ fn dated_choice(
     best
 }
 
+fn scheduled_activity(activity: &str, title: &str, dates: &[NaiveDate]) -> Option<String> {
+    for date in dates {
+        for pattern in ["%-m/%-d/%Y", "%m/%d/%Y", "%Y-%m-%d", "%B %-d, %Y"] {
+            let printed = date.format(pattern).to_string();
+            let Some((name, when)) = activity.split_once(&printed) else {
+                continue;
+            };
+            let name = name.trim_matches(|c: char| c.is_whitespace() || c == '|');
+            if !(6..=115).contains(&name.len()) || name.contains("://") {
+                continue;
+            }
+            let venue = title.rsplit(" | ").next().unwrap_or(title);
+            let mut detail = format!("{venue} · {}", date.format("%A, %B %-d"));
+            if !when.trim().is_empty() {
+                detail.push_str(&format!(
+                    " · {}",
+                    when.trim_matches(|c: char| c.is_whitespace() || c == '@')
+                ));
+            }
+            return Some(format!("I’d try **{name}**.\n\n{detail}"));
+        }
+    }
+    None
+}
+
 pub fn complete(s: &Store, turn: &mut Value, model: &Value, notes: &[Value]) -> Res<()> {
     let query = turn["web"]["query"]
         .as_str()
         .ok_or("Missing search query.")?
         .to_owned();
-    let pages = search(&query)?;
+    let mut pages = search(&query, turn["web"]["outing"] == true)?;
+    if turn["web"]["outing"] == true && !pages.is_empty() {
+        let urls = pages.iter().map(|p| &p["url"]).collect::<Vec<_>>();
+        let fetched = request("web_fetch_exa", json!({"urls":urls,"maxCharacters":9000}))?;
+        let mut candidates = available_pages(&fetched, &pages, chrono::Local::now().date_naive())?;
+        if let Some(city) = turn["web"]["city"].as_str() {
+            let city = city.split(',').next().unwrap_or(city).trim().to_lowercase();
+            let compact = city.replace(' ', "");
+            candidates.retain(|p| {
+                let page = format!(
+                    "{} {}",
+                    p["title"].as_str().unwrap_or(""),
+                    p["excerpt"].as_str().unwrap_or("")
+                )
+                .to_lowercase();
+                let host = url::Url::parse(p["url"].as_str().unwrap_or(""))
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_owned))
+                    .unwrap_or_default();
+                page.contains(&city) || host.contains(&compact)
+            });
+        }
+        if candidates.is_empty() {
+            turn["reply"]=json!("I found listings, but couldn’t verify a weekend option in town with current venue details. I’d broaden the activity or try a nearby town.");
+            turn["web"]["status"] = json!("empty");
+            turn["web"]["checkedAt"] = json!(now());
+            return Ok(());
+        }
+        pages = candidates;
+    }
     if pages.is_empty() {
         turn["reply"] =
             json!("I couldn’t find a source for that search. Try a broader topic or another town.");
@@ -434,6 +566,12 @@ pub fn complete(s: &Store, turn: &mut Value, model: &Value, notes: &[Value]) -> 
                     reply.push_str(&format!("\n\n“{}”", short_quote(detail)));
                 }
                 reply.push_str("\n\nCheck the venue for this weekend’s availability.");
+            }
+            if let Some(clear) = dated
+                .as_ref()
+                .and_then(|(_, activity, _, _)| scheduled_activity(activity, title, &dates))
+            {
+                reply = clear;
             }
             turn["reply"] = json!(reply);
         } else if let Some(a) = answer["answer"]
@@ -541,5 +679,34 @@ mod listing_tests {
         let picked = dated_choice(&pages, &["2026-11-21".parse().unwrap()], &[&n]).unwrap();
         assert!(picked.1.contains("Block Printing"));
         assert!(picked.2.contains("November 21"));
+    }
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::*;
+    #[test]
+    fn a_real_date_does_not_make_a_sold_out_or_closed_event_a_recommendation() {
+        let mut pages = Vec::new();
+        let mut text = String::new();
+        for (i, availability) in [
+            "SOLD OUT: Printing workshop",
+            "Registration closes November 17.",
+            "Drop-in art making. Open Saturday November 21.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let url = format!("https://museum.example/{i}");
+            pages.push(json!({"title":"Art workshop","url":url}));
+            text.push_str(&format!(
+                "# Workshop\nURL: {url}\n\nNovember 21, 10 am to 4 pm.\n{availability}\n\n"
+            ));
+        }
+        let response = json!({"result":{"content":[{"text":text}]}});
+        let good =
+            available_pages(&response.to_string(), &pages, "2026-11-19".parse().unwrap()).unwrap();
+        assert_eq!(good.len(), 1);
+        assert_eq!(good[0]["url"], pages[2]["url"]);
     }
 }
