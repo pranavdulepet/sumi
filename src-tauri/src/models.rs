@@ -42,12 +42,22 @@ pub fn infer_with(
     limit: u32,
     schema: Option<&Value>,
 ) -> Res<String> {
+    infer_reply(config, system, input, limit, schema, None)
+}
+pub fn infer_reply(
+    config: &Value,
+    system: &str,
+    input: &str,
+    limit: u32,
+    schema: Option<&Value>,
+    sink: Option<&mut dyn FnMut(&str)>,
+) -> Res<String> {
     let name = config["name"]
         .as_str()
         .ok_or("Choose a local model first.")?;
     let messages = json!([{"role":"system","content":system},{"role":"user","content":input}]);
     if config["runtime"] == "Sumi" {
-        return crate::bundled::infer(config, messages, limit, schema);
+        return crate::bundled::infer(config, messages, limit, schema, sink);
     }
     let (url, mut body) = match config["runtime"].as_str() {
         Some("Ollama") => (
@@ -67,12 +77,20 @@ pub fn infer_with(
             body["response_format"] = json!({"type":"json_schema","json_schema":{"name":"result","strict":true,"schema":schema}})
         }
     }
-    let v: Value = agent(120)
+    body["stream"] = json!(sink.is_some());
+    let response = agent(120)
         .post(&url)
         .send_json(body)
-        .map_err(|e| format!("Local model unavailable: {e}"))?
-        .into_json()
-        .msg()?;
+        .map_err(|e| format!("Local model unavailable: {e}"))?;
+    if let Some(sink) = sink {
+        return consume_chat(
+            response.into_reader(),
+            config["runtime"] == "Ollama",
+            limit,
+            sink,
+        );
+    }
+    let v: Value = response.into_json().msg()?;
     let reply = v
         .pointer("/message/content")
         .or_else(|| v.pointer("/choices/0/message/content"))
@@ -104,4 +122,60 @@ pub fn start_ollama() -> Res<()> {
         .spawn()
         .msg()?;
     Ok(())
+}
+
+pub fn consume_chat(
+    reader: impl std::io::Read,
+    ollama: bool,
+    limit: u32,
+    sink: &mut dyn FnMut(&str),
+) -> Res<String> {
+    use std::io::{BufRead, BufReader};
+    let mut answer = String::new();
+    let mut complete = false;
+    for line in BufReader::new(reader.take(2_097_152)).lines() {
+        let line = line.msg()?;
+        let raw = if ollama {
+            line.as_str()
+        } else if let Some(data) = line.strip_prefix("data:") {
+            data.trim()
+        } else {
+            continue;
+        };
+        if raw.is_empty() {
+            continue;
+        }
+        if raw == "[DONE]" {
+            complete = true;
+            break;
+        }
+        let event: Value =
+            serde_json::from_str(raw).map_err(|_| "The model returned an unreadable response.")?;
+        if !event["error"].is_null() {
+            return Err("The model stopped before finishing.".into());
+        }
+        let delta = if ollama {
+            event.pointer("/message/content")
+        } else {
+            event.pointer("/choices/0/delta/content")
+        }
+        .and_then(Value::as_str)
+        .unwrap_or("");
+        if answer.len() + delta.len() > limit as usize * 16 {
+            return Err("The answer exceeded the notebook limit.".into());
+        }
+        if !delta.is_empty() {
+            answer.push_str(delta);
+            sink(delta);
+        }
+        if ollama && event["done"] == true {
+            complete = true;
+            break;
+        }
+    }
+    if complete && !answer.trim().is_empty() {
+        Ok(answer.trim().to_owned())
+    } else {
+        Err("The model stopped before finishing. Try again.".into())
+    }
 }

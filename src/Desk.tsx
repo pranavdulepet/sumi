@@ -1,3 +1,6 @@
+import {Attachments,readFiles} from './Attachments';
+import {Sources} from './Onboarding';
+import {listen} from '@tauri-apps/api/event';
 import {ExportArrival} from './ExportArrival';
 import {useEffect, useMemo, useRef, useState} from 'react';
 import {type Row, type Action, day} from './api';
@@ -37,23 +40,42 @@ export function Desk({
     [settled, setSettled] = useState(''),
     [archive, showArchive] = useState(false),
     [breakOpen, open] = useState(false);
+  const [files,setFiles]=useState<Row[]>([]);
+  const [shareFiles,share]=useState(false);
+  const [importing,openImport]=useState(false);
+  const [readingFile,reading]=useState(false);
+  const fileLock=useRef(false);
+  async function addFiles(list:File[]){
+    if(fileLock.current || sending.current || !list.length)return;
+    fileLock.current=true;reading(true);setError('');
+    try{const newFiles=await readFiles(list,4-files.length);setFiles(v=>[...v,...newFiles]);}
+    catch(e){setError(String(e));}finally{fileLock.current=false;reading(false);}
+  }
+  const [partial, setPartial] = useState('');
   const sending = useRef(false);
   const pending = useRef<{text: string; id: string} | null>(null);
   const turns: Row[] = data.chat?.turns || [];
   const leaf = useRef<HTMLDivElement>(null);
   async function send() {
-    if (!text.trim() || sending.current || busy) return;
+    if (!text.trim() || sending.current || busy || fileLock.current) return;
     sending.current = true;
     setBusy(true);
     setError('');
+    setPartial('');
     if (pending.current?.text !== text)
       pending.current = {text, id: crypto.randomUUID().replaceAll('-', '')};
+    let stop: (() => void) | undefined;
     try {
+      if ((window as Window & {__TAURI_INTERNALS__?: {transformCallback?: unknown}}).__TAURI_INTERNALS__?.transformCallback) {
+        stop = await listen<{turn: string; delta: string}>('reply-delta', event => {
+          if (event.payload.turn === pending.current?.id) setPartial(v => v + event.payload.delta);
+        });
+      }
       await act('askSheet', {
         sheet: data.current,
         turn: pending.current.id,
         text,
-        private: privateSheet,
+        private: privateSheet,files,shareFiles,
       });
       const turn = pending.current.id;
       requestAnimationFrame(() => {
@@ -65,6 +87,7 @@ export function Desk({
           reply.scrollIntoView({block: 'nearest'});
         }
       });
+      setFiles([]);share(false);
       setText('');
       ink.dismiss();
       setCaret(0);
@@ -72,6 +95,8 @@ export function Desk({
     } catch (e) {
       setError(String(e));
     } finally {
+      stop?.();
+      setPartial('');
       sending.current = false;
       setBusy(false);
     }
@@ -156,7 +181,7 @@ export function Desk({
       ? candidate
       : undefined;
   return (
-    <main className="page desk">
+    <main className="page desk" onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();}} onDrop={e=>{if(e.dataTransfer.files.length){e.preventDefault();void addFiles(Array.from(e.dataTransfer.files));}}}>
       <aside className="desk-margin">
         <time>
           {new Date().toLocaleDateString(undefined, {
@@ -167,7 +192,7 @@ export function Desk({
         {!sealed && (
           <button
             className="ink-action ask"
-            disabled={busy || !text.trim()}
+            disabled={busy || readingFile || !text.trim()}
             onClick={send}
           >
             <Stroke points={data.mark} />
@@ -262,6 +287,7 @@ export function Desk({
             data-turn={t.id}
           >
             <p className="asked">{t.question}</p>
+            {!!t.files?.length && <small>{t.files.map((f:Row)=>f.name).join(' · ')}</small>}
             <small>Sumi</small>
             <Reply
               text={
@@ -328,6 +354,8 @@ export function Desk({
             )}
             <details className="receipt">
               <summary>Behind this reply</summary>
+              {t.id===turns.at(-1)?.id && !t.web && !t.timeline?.length && <button disabled={busy} onClick={async()=>{setBusy(true);try{await act('regenerate',{sheet:data.current,turn:t.id,attempt:crypto.randomUUID().replaceAll('-','')});}catch(e){setError(String(e));}finally{setBusy(false);}}}>Try this answer again</button>}
+
               <p>
                 {t.timeline?.length
                   ? 'Quoted from your notebook'
@@ -364,6 +392,7 @@ export function Desk({
             </details>
           </article>
         ))}
+        {partial && busy && <article aria-label="Answer in progress"><small>Sumi</small><Reply text={partial} /></article>}
         <div className="writing">
           {ghost && (
             <div className="ghost-layer" aria-hidden="true">
@@ -423,6 +452,11 @@ export function Desk({
           />
         </div>
 
+        {!sealed && <Attachments files={files} disabled={busy||readingFile} add={addFiles} remove={i=>setFiles(v=>v.filter((_,k)=>k!==i))}/>}
+        {!privateSheet && data.model?.runtime==='ChatGPT' && (files.length>0 || turns.some(t=>t.files?.length)) && <label className="check"><input type="checkbox" checked={shareFiles} onChange={e=>share(e.target.checked)}/>Allow OpenAI to read file excerpts for this reply</label>}
+        {readingFile && <small role="status">Reading on this Mac…</small>}
+        {data.importOffer===data.current && !importing && <aside className="import-offer"><p>Want me to read your past ChatGPT or Claude conversations?</p><button onClick={async()=>{await act('dismissImportOffer');openImport(true);}}>Read past chats</button><button onClick={()=>act('dismissImportOffer')}>Maybe later</button></aside>}
+        {importing && <section><Sources sources={data.sources} request={data.requestedExport} act={act}/><button onClick={async()=>{await act('read');openImport(false);}}>Read selected sources</button><button onClick={()=>openImport(false)}>Close</button></section>}
         {ghost && (
           <p className="small" aria-live="polite">
             <kbd>Tab</kbd> accepts the light ink

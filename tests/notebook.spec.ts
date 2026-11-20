@@ -1173,7 +1173,7 @@ test('resume the publisher’s real GGUF download and seal a decision without an
 }) => {
   test.skip(
     process.env.SUMI_TEST_MODEL_DOWNLOAD !== '1',
-    'Requires the free 1.12 GB publisher download.',
+    'Requires the hardware-tier GGUF download.',
   );
   test.setTimeout(420000);
   page.setDefaultTimeout(15000);
@@ -1182,7 +1182,7 @@ test('resume the publisher’s real GGUF download and seal a decision without an
     first.folder,
     '.sumi',
     'models',
-    'qwen2.5-1.5b-instruct-q4_k_m.gguf.partial',
+    (await first.rpc('modelDownloadStatus')).file+'.partial',
   );
   let writer: typeof first | undefined, reader: typeof first | undefined;
   const closed = (core: typeof first.core) =>
@@ -1235,9 +1235,9 @@ test('resume the publisher’s real GGUF download and seal a decision without an
       page.getByRole('heading', {name: /Your notebook stays/}),
     ).toBeVisible();
     await page.getByRole('button', {name: 'Think on this Mac instead'}).click();
-    await page.getByRole('button', {name: 'Resume Qwen 2.5 download'}).click();
+    await page.getByRole('button', {name: /^Resume .* download$/}).click();
     await expect(
-      page.getByRole('progressbar', {name: 'Qwen download'}),
+      page.getByRole('progressbar', {name: 'Local model download'}),
     ).toBeVisible();
     await expect(page.getByText('Ready to think on this Mac.')).toBeVisible({
       timeout: 240000,

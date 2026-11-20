@@ -90,12 +90,24 @@ pub fn state(s: &Store) -> Res<Value> {
     let mut surprises = crate::mirror::reviews(&scores, &entries, chrono::Utc::now());
     surprises.truncate(3);
     Ok(
-        json!({"notes":crate::memory::timeline(s)?,"autoListings":s.get("autoListings")?,"chat":s.optional_doc("chat",k)?,"skills":crate::conversation::skills(s)?,"firstCorrection":correction,"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"planUsage":s.get(&format!("budget/{}/ChatGPT",chrono::Utc::now().format("%Y-%m")))?, "providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
+        json!({"importOffer":s.get("importOffer")?,"notes":crate::memory::timeline(s)?,"autoListings":s.get("autoListings")?,"chat":s.optional_doc("chat",k)?,"skills":crate::conversation::skills(s)?,"firstCorrection":correction,"setup":s.get("onboarded")?,"mark":s.get("mark")?,"model":s.get("model")?,"sources":s.list("source")?,"requestedExport":s.get("requestedExport")?,"current":k,"sheet":s.sheet(k)?,"sheets":sheets,"sealed":sealed,"entries":scroll::hydrate(s,entries)?,"proposals":s.list("proposal")?,"versions":versions,"scores":scores,"surprises":surprises,"reading":s.get("reading")?, "firstReading":s.get("firstReading")?,"agents":agents,"detectedAgents":seal::detected(),"log":s.list("log")?,"busy":s.reading.load(std::sync::atomic::Ordering::SeqCst),"tuning":s.list("tune")?,"backgroundIssue":s.get("backgroundIssue")?,"globalShortcutReady":s.get("globalShortcutReady")?,"catalogConfigured":crate::catalog::configured(),"catalogOff":s.get("catalogOff")?,"catalogUpdated":s.get("catalogUpdated")?,"marginOff":s.get("marginOff")?,"marginMuted":s.get("marginMuted")?,"autoStamp":s.get("autoStamp")?,"planUsage":s.get(&format!("budget/{}/ChatGPT",chrono::Utc::now().format("%Y-%m")))?, "providers":s.list("provider")?,"routes":s.list("route")?,"sealUrl":s.get("sealUrl")?,"root":s.root.to_string_lossy()}),
     )
 }
 pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
     match op {
         "state" => state(s),
+        "notebookMeasures" => crate::notebook_data::measures(s),
+        "exportNotebook" => {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name("Sumi notebook.zip")
+                .save_file()
+            {
+                crate::notebook_data::export(s, &path)?;
+                Ok(json!(path))
+            } else {
+                Ok(Value::Null)
+            }
+        }
         "readingProgress" => s.get("readingProgress"),
         "firstReadingProgress" => crate::first_reading::progress(s),
         "nextChoice" => crate::seed::next(s),
@@ -179,6 +191,8 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
             }
             scroll::change_locked(s, "delete", a)
         }
+        "editNote" => crate::memory::revise(s, a, false),
+        "deleteNote" => crate::memory::revise(s, a, true),
         "closeNote" => crate::memory::close(s, text(a, "id")?),
         "autoListings" => {
             s.set("autoListings", &json!(a["value"] == true))?;
@@ -203,6 +217,12 @@ pub fn action(s: &Store, op: &str, a: &Value) -> Res<Value> {
                 .msg()?;
             Ok(Value::Null)
         }
+        "dismissImportOffer" => {
+            s.set("importOffer", &json!(false))?;
+            Ok(Value::Null)
+        }
+        "readAttachment" => crate::attachments::read(a),
+        "regenerate" => crate::conversation::regenerate(s, a, &mut |_| {}),
         "askSheet" => crate::conversation::ask(s, a),
         "saveSkill" => {
             let _edit = s.edit.lock().unwrap();

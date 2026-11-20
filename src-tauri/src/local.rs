@@ -85,7 +85,12 @@ pub fn fit(s: &Store) -> serde_json::Value {
         .flatten()
         .find(|m| {
             let size = m["bytes"].as_u64().unwrap_or(0);
-            bytes > size * 2 + 4_000_000_000 && ollama_disk > size + 4_000_000_000
+            bytes
+                >= m["ram"]
+                    .as_u64()
+                    .map(|g| g * 1_073_741_824)
+                    .unwrap_or(size * 2 + 4_000_000_000)
+                && ollama_disk > size + 4_000_000_000
         });
     serde_json::json!({"memory":bytes,"freeDisk":disk,"recommendation":best})
 }

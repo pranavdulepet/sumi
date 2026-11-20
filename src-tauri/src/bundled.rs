@@ -68,7 +68,13 @@ pub fn use_file(s: &Store, path: &Path) -> Res<Value> {
     s.set("model", &config)?;
     Ok(config)
 }
-pub fn infer(cfg: &Value, messages: Value, limit: u32, schema: Option<&Value>) -> Res<String> {
+pub fn infer(
+    cfg: &Value,
+    messages: Value,
+    limit: u32,
+    schema: Option<&Value>,
+    sink: Option<&mut dyn FnMut(&str)>,
+) -> Res<String> {
     let path = PathBuf::from(cfg["path"].as_str().ok_or("Missing model file.")?);
     let base = Path::new(
         cfg["private"]
@@ -161,13 +167,16 @@ pub fn infer(cfg: &Value, messages: Value, limit: u32, schema: Option<&Value>) -
     if let Some(schema) = schema {
         body["response_format"] = json!({"type":"json_schema","json_schema":{"name":"result","strict":true,"schema":schema}});
     }
-    let v: Value = h
+    body["stream"] = json!(sink.is_some());
+    let response = h
         .post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
         .set("Authorization", &format!("Bearer {token}"))
         .send_json(body)
-        .msg()?
-        .into_json()
         .msg()?;
+    if let Some(sink) = sink {
+        return crate::models::consume_chat(response.into_reader(), false, limit, sink);
+    }
+    let v: Value = response.into_json().msg()?;
     v.pointer("/choices/0/message/content")
         .and_then(Value::as_str)
         .map(|s| s.trim().to_owned())

@@ -1,14 +1,16 @@
 import {useState} from 'react';
 import {type Action, type Row} from './api';
 export function Providers({data, act}: {data: Row; act: Action}) {
+  const prior=data.providers.find((r:Row)=>r.id==='OpenRouter');
   const [kind, pick] = useState('OpenRouter'),
-    [model, setModel] = useState(''),
+    [model, setModel] = useState(prior?.model || ''),
     [secret, setSecret] = useState(''),
     [endpoint, setEndpoint] = useState(''),
-    [cap, limit] = useState(0),
-    [enabled, enable] = useState(false),
+    [cap, limit] = useState(prior?.cap || 0),
+    [enabled, enable] = useState(!!prior?.enabled),
+    [conversation,allowConversation]=useState(!!prior?.conversation),
     [quiz, allowQuiz] = useState(false),
-    [backtest, allowBacktest] = useState(false),
+    [backtest, allowBacktest] = useState(!!prior?.backtest),
     [busy, wait] = useState(false),
     [message, note] = useState('');
   function choose(k: string) {
@@ -19,6 +21,7 @@ export function Providers({data, act}: {data: Row; act: Action}) {
     setEndpoint(old?.endpoint || '');
     limit(old?.cap || 0);
     enable(!!old?.enabled);
+    allowConversation(!!old?.conversation);
     allowQuiz(!!old?.quiz);
     allowBacktest(!!old?.backtest);
     note('');
@@ -115,6 +118,7 @@ export function Providers({data, act}: {data: Row; act: Action}) {
           ? 'Allow cleaned grading decisions'
           : 'Allow idle reflection'}
       </label>
+      {kind==='OpenRouter' && <label className="check"><input type="checkbox" checked={conversation} onChange={e=>allowConversation(e.target.checked)}/>Use this model for deeper conversations when ChatGPT is connected. OpenRouter receives the passages used and may charge your account.</label>}
       {kind === 'Jev' && enabled && (
         <label className="check">
           <input
@@ -145,7 +149,7 @@ export function Providers({data, act}: {data: Row; act: Action}) {
               key: secret,
               endpoint,
               cap,
-              enabled,
+              enabled,conversation,
               quiz,
               backtest,
             });

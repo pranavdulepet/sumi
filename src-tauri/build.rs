@@ -7,6 +7,10 @@ fn main() {
         .compile("sumi_native");
     for name in [
         "Foundation",
+        "Vision",
+        "ImageIO",
+        "AppKit",
+        "PDFKit",
         "NaturalLanguage",
         "ApplicationServices",
         "IOKit",

@@ -112,19 +112,19 @@ export function Models({
         }}
       >
         {working === 'gguf'
-          ? 'Preparing Qwen on this Mac…'
+          ? 'Preparing the model on this Mac…'
           : !enoughSpace
             ? 'More disk space needed'
             : download.cached
-              ? 'Set up Qwen 2.5 · up to 1.12 GB'
+              ? 'Use '+download.label
               : download.bytes
-                ? 'Resume Qwen 2.5 download'
-                : 'Download Qwen 2.5 · 1.12 GB'}
+                ? 'Resume '+download.label+' download'
+                : 'Download '+download.label+' · '+(download.total/1e9).toFixed(1)+' GB'}
       </button>
       {working === 'gguf' && !download.cached && (
         <div className="model-download">
           <progress
-            aria-label="Qwen download"
+            aria-label="Local model download"
             value={download.bytes}
             max={download.total}
           />

@@ -171,6 +171,8 @@ pub fn source(s: &Store, source: &str) -> Res<()> {
             [source],
         )
         .msg()?;
+        tx.execute("DELETE FROM imported_messages WHERE source=?", [source])
+            .msg()?;
         tx.execute("DELETE FROM moments WHERE source=?", [source])
             .msg()?;
         for (k, id) in remove {

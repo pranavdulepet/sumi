@@ -7,6 +7,12 @@ use std::{collections::HashMap, sync::LazyLock};
 static HOME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(?:actually,? )?i (?:now live in|live in|moved to|am based in|am living in) ([\p{L}][\p{L} .'-]{0,48})$").unwrap()
 });
+static PERSON: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:My |my )?(?:cofounder|partner|colleague|manager|friend|sister|brother) ([A-Z][\p{L}'-]+) (?:is|owns|leads|likes|works)\b|^([A-Z][\p{L}'-]+) (?:is my|owns|leads|is responsible for)\b").unwrap()
+});
+static PROJECT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(?:i(?: am|'m|’m)|we(?: are|'re|’re)) (?:currently )?(?:working on|focused on|deep in|preparing for) (.{2,80})$").unwrap()
+});
 static TASTE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(?:(?:on|for) (?:my )?weekends?,? i (?:prefer|like|love)|i (?:prefer|like|love|enjoy))\s").unwrap()
 });
@@ -69,6 +75,18 @@ pub fn observe(
                 continue;
             }
             ("home".to_owned(), c[1].to_owned())
+        } else if let Some(c) = PERSON.captures(assertion) {
+            (
+                format!("person/{}", c.get(1).or(c.get(2)).unwrap().as_str()),
+                assertion.to_owned(),
+            )
+        } else if let Some(c) = PROJECT.captures(assertion) {
+            (format!("project/{}", c[1].trim()), assertion.to_owned())
+        } else if lower.starts_with("today i ")
+            || lower.starts_with("tomorrow i ")
+            || lower.starts_with("yesterday i ")
+        {
+            (format!("moment/{turn}/{i}"), assertion.to_owned())
         } else if TASTE.is_match(assertion) {
             let scope = if lower.starts_with("on weekends") || lower.starts_with("for weekends") {
                 "weekend preference".to_owned()
@@ -89,9 +107,21 @@ pub fn observe(
                 Some(json!({"phrase":m.as_str(),"date":date.to_string()}))
             })
             .collect();
+        let scale = if topic.starts_with("moment/") {
+            "moment"
+        } else if topic.starts_with("project/") {
+            "phase"
+        } else {
+            "trait"
+        };
+        let expiry = match scale {
+            "phase" => Some(valid_from + chrono::Duration::days(35)),
+            "moment" => Some(valid_from + chrono::Duration::days(2)),
+            _ => None,
+        };
         notes.push(
             json!({"id":&hash(&format!("{turn}/{i}"))[..32],"topic":topic,"value":value,
-            "text":text,"validFrom":valid_from.to_rfc3339(),"learnedAt":at.to_rfc3339(),
+            "text":text,"scale":scale,"importance":if topic.starts_with("person/"){0.85}else{0.7},"validUntil":expiry.map(|t|t.to_rfc3339()),"validFrom":valid_from.to_rfc3339(),"learnedAt":at.to_rfc3339(),
             "private":private,"restricted":restricted,"dates":dates}),
         );
     }
@@ -191,7 +221,14 @@ pub fn relevant(s: &Store, q: &str, outing: bool, hosted: bool) -> Res<Vec<Value
             .unwrap_or(0);
         let score = 4. * overlap as f64
             + 2. * n["importance"].as_f64().unwrap_or(0.5)
-            + 0.5f64.powf(age as f64 / 120.);
+            + 0.5f64.powf(
+                age as f64
+                    / match n["scale"].as_str() {
+                        Some("phase") => 21.,
+                        Some("moment") => 2.,
+                        _ => 120.,
+                    },
+            );
         std::cmp::Reverse(((outing && n["topic"] == "home"), (100. * score) as i64))
     });
     notes.truncate(8);
@@ -200,7 +237,29 @@ pub fn relevant(s: &Store, q: &str, outing: bool, hosted: bool) -> Res<Vec<Value
 
 pub fn project(s: &Store) -> Res<()> {
     let mut body = String::from("# What Sumi knows\n");
+    let mut pages = std::collections::BTreeMap::<String, Vec<String>>::new();
+    let directory = s.root.join("desk/pages");
+    std::fs::create_dir_all(&directory).msg()?;
     for n in timeline(s)? {
+        let topic = n["topic"].as_str().unwrap_or("Timeline");
+        let title = if let Some(v) = topic.strip_prefix("person/") {
+            format!("People · {v}")
+        } else if let Some(v) = topic.strip_prefix("project/") {
+            format!("Projects · {v}")
+        } else if topic.contains("preference") {
+            "Preferences".to_owned()
+        } else {
+            "Timeline".to_owned()
+        };
+        pages.entry(title).or_default().push(format!(
+            "- {} · {}{}",
+            n["text"].as_str().unwrap_or(""),
+            n["validFrom"].as_str().unwrap_or(""),
+            n["validUntil"]
+                .as_str()
+                .map(|u| format!(" → {u}"))
+                .unwrap_or_default()
+        ));
         body.push_str(&format!(
             "\n- {} · since {}{}\n",
             n["text"].as_str().unwrap_or(""),
@@ -214,6 +273,34 @@ pub fn project(s: &Store) -> Res<()> {
             body.push_str(&format!("  - {} = {}\n", anchor["phrase"], anchor["date"]));
         }
     }
+    let mut ids = vec![];
+    for (title, lines) in pages {
+        let key = hash(&title)[..32].to_owned();
+        atomic(
+            &directory.join(format!("{key}.md")),
+            format!("# {title}\n\n{}\n", lines.join("\n")).as_bytes(),
+        )?;
+        body.push_str(&format!(
+            "\n- [{}](pages/{key}.md)",
+            title.replace(['[', ']'], "")
+        ));
+        ids.push(key);
+    }
+    for old in s
+        .get("projectedPages")?
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if ident(old).is_ok() && !ids.iter().any(|k| k == old) {
+            let path = directory.join(format!("{old}.md"));
+            if path.exists() {
+                std::fs::remove_file(path).msg()?;
+            }
+        }
+    }
+    s.set("projectedPages", &json!(ids))?;
     atomic(&s.root.join("desk/memories.md"), body.as_bytes())?;
     let core = core_notes(s, false)?
         .iter()
@@ -237,6 +324,53 @@ pub fn close(s: &Store, id: &str) -> Res<Value> {
     Ok(Value::Null)
 }
 
+pub fn revise(s: &Store, a: &Value, remove: bool) -> Res<Value> {
+    let _lock = s.edit.lock().unwrap();
+    let key = ident(a["id"].as_str().unwrap_or(""))?;
+    let note = s.doc("note", key)?;
+    // Materialise other validity windows before changing this version.
+    for n in timeline(s)?
+        .into_iter()
+        .filter(|n| n["topic"] == note["topic"] && n["id"] != key && n["validUntil"].is_string())
+    {
+        s.put("note", &n)?;
+    }
+    if remove {
+        s.del("note", key)?;
+    } else {
+        let text = a["text"]
+            .as_str()
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && v.chars().count() <= 320)
+            .ok_or("Write a correction of up to 320 characters.")?;
+        let mut replacement = observe(
+            text,
+            &id(),
+            Local::now(),
+            note["private"] == true,
+            note["restricted"] == true,
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| note.clone());
+        let now = now();
+        replacement["id"] = json!(id());
+        replacement["topic"] = note["topic"].clone();
+        replacement["text"] = json!(text);
+        if replacement["value"] == note["value"] {
+            replacement["value"] = json!(text);
+        }
+        replacement["learnedAt"] = json!(now);
+        replacement["validFrom"] = json!(now);
+        replacement["sheet"] = note["sheet"].clone();
+        replacement["importance"] = json!(1.0);
+        replacement["validUntil"] = Value::Null;
+        s.put("note", &replacement)?;
+    }
+    project(s)?;
+    Ok(Value::Null)
+}
+
 // Only observations that still agree across distinct local dates can enter the
 // compact core. Its members stay linked to the original, correctable notes.
 fn core_candidates(notes: &[Value]) -> Vec<Value> {
@@ -255,6 +389,7 @@ fn core_candidates(notes: &[Value]) -> Vec<Value> {
         .iter()
         .filter(|n| {
             current(n)
+                && n["scale"] != "moment"
                 && days
                     .get(&(
                         n["topic"].to_string(),

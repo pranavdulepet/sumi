@@ -474,7 +474,7 @@ pub fn run(
         ]
         .iter()
         .any(|cue| lower.contains(cue));
-        if needs_math && !wants_timeline(question) {
+        if needs_math && math.is_none() && !wants_timeline(question) {
             let facts: Vec<_> = hits.iter().filter_map(|v| v["words"].as_str()).collect();
             // The planner only sees permitted material. Dates are excluded from calculator inputs.
             let evidence = format!("{question} {}", facts.join(" "));
@@ -524,20 +524,31 @@ pub fn recall(
     }
     let db = s.db.lock().unwrap();
     // Older notebooks have no per-turn clock. Retain their sheet date as approximate provenance.
-    let mut stmt=db.prepare("SELECT json_extract(t.value,'$.question'), COALESCE(json_extract(t.value,'$.at'),json_extract(p.v,'$.date')), json_extract(t.value,'$.at') IS NULL FROM docs c JOIN docs p ON p.kind='sheet' AND p.id=c.id JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND (?1=0 OR (COALESCE(json_extract(c.v,'$.private'),0)=0 AND COALESCE(json_extract(p.v,'$.private'),0)=0)) ORDER BY julianday(coalesce(json_extract(t.value,'$.at'),json_extract(p.v,'$.date'))) DESC LIMIT 1500").msg()?;
+    let mut stmt=db.prepare("SELECT words, at, approximate, role FROM (
+        SELECT json_extract(t.value,'$.question') words, COALESCE(json_extract(t.value,'$.at'),json_extract(p.v,'$.date')) at, json_extract(t.value,'$.at') IS NULL approximate, 'user' role FROM docs c JOIN docs p ON p.kind='sheet' AND p.id=c.id JOIN json_each(c.v,'$.turns') t WHERE c.kind='chat' AND (?1=0 OR (COALESCE(json_extract(c.v,'$.private'),0)=0 AND COALESCE(json_extract(p.v,'$.private'),0)=0))
+        UNION ALL SELECT body,stamp,0,role FROM imported_messages WHERE ?1=0 AND (?2 OR role='user')
+        ) WHERE EXISTS(SELECT 1 FROM json_each(?3) term WHERE instr(lower(words),term.value)>0)").msg()?;
+    let include_assistant = question.to_lowercase().contains("say")
+        && question.to_lowercase().contains("assistant")
+        || question.to_lowercase().contains("past chat")
+        || question.to_lowercase().contains("imported");
     let rows = stmt
-        .query_map(rusqlite::params![hosted], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, bool>(2)?,
-            ))
-        })
+        .query_map(
+            rusqlite::params![hosted, include_assistant, json!(terms).to_string()],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )
         .msg()?;
     let mut candidates = vec![];
     let mut frequency = std::collections::HashMap::new();
     for row in rows {
-        let (text, date, approximate) = row.msg()?;
+        let (text, date, approximate, role) = row.msg()?;
         let Ok(stamp) = DateTime::parse_from_rfc3339(&date) else {
             continue;
         };
@@ -567,7 +578,7 @@ pub fn recall(
         for term in &shared {
             *frequency.entry(term.clone()).or_insert(0usize) += 1;
         }
-        candidates.push((shared,recency+important,stamp,json!({"when":date,"approximate":approximate,"words":text.chars().take(650).collect::<String>()})));
+        candidates.push((shared,recency+important,stamp,json!({"role":role,"when":date,"approximate":approximate,"words":text.chars().take(650).collect::<String>()})));
     }
     // Use the person's own topic first. Planner-supplied synonyms are a fallback
     // when none of the passages use the original wording.

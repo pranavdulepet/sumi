@@ -33,6 +33,11 @@ export function Reply({
       {blocks.map((block, i) => {
         const visual = chart(block);
         if (visual) return <Fragment key={i}>{visual}</Fragment>;
+        if (block.startsWith('```diagram\n')) {
+          const items=block.replace(/^```diagram\n/,'').replace(/```$/,'').trim().split(/\s*(?:->|→)\s*/);
+          if(items.length>=2 && items.length<=10 && items.every(t=>t.length>0 && t.length<=100))
+            return <ol className="process-diagram" key={i} aria-label="Process diagram">{items.map((t,k)=><li key={k}>{inline(t)}</li>)}</ol>;
+        }
         if (block.startsWith('```'))
           return (
             <pre key={i}>
@@ -85,6 +90,8 @@ export function Reply({
                   </div>
                 );
             }
+            if(lines.every(line=>/^\s*[-*] \[[ xX]\] /.test(line)))
+              return <ul className="checklist" key={key} aria-label="Checklist">{lines.map((line,k)=><li key={k}><label><input type="checkbox" defaultChecked={/\[[xX]\]/.test(line)}/>{inline(line.replace(/^\s*[-*] \[[ xX]\] /,''))}</label></li>)}</ul>;
             if (lines.every(line => /^\s*[-*] /.test(line)))
               return (
                 <ul key={key}>

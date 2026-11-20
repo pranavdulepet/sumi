@@ -10,7 +10,7 @@ pub fn configured() -> bool {
     URL.is_some() && KEY.is_some()
 }
 pub fn installed(s: &Store) -> Value {
-    s.get("catalog").ok().filter(|v|v["models"].is_array()).unwrap_or_else(||json!({"revision":1,"models":[{"name":"qwen3:8b","bytes":5200000000u64},{"name":"llama3.2:3b","bytes":2100000000u64},{"name":"qwen2.5:0.5b","bytes":420000000u64}]}))
+    s.get("catalog").ok().filter(|v|v["models"].is_array()).unwrap_or_else(||json!({"revision":1,"models":[{"name":"qwen3.6:35b-a3b","bytes":22134528992u64,"ram":32},{"name":"gemma4:12b","bytes":6975879296u64,"ram":16},{"name":"qwen3:4b","bytes":2500000000u64,"ram":8}]}))
 }
 pub fn verify(raw: &Value, key: &[u8], current: u64) -> Res<Value> {
     let payload = STANDARD

@@ -4,6 +4,7 @@ import {Page} from './Page';
 import {Sources} from './Onboarding';
 import {Models} from './Models';
 import {Stroke} from './Ink';
+import {NotebookData} from './NotebookData';
 import {Providers} from './Providers';
 
 function PlanButton({
@@ -266,6 +267,7 @@ export function ThinkingSettings({
       <button onClick={agents}>Connected agents</button>
       <button onClick={readings}>Review predictions</button>
       <Providers data={data} act={act} />
+      <NotebookData root={data.root}/>
       <section>
         <details>
           <summary>Sources and readings</summary>

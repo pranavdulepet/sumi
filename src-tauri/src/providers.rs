@@ -76,7 +76,7 @@ pub fn configure(s: &Store, a: &Value) -> Res<()> {
     }
     s.put(
         "provider",
-        &json!({"id":k,"model":model,"cap":cap,"endpoint":endpoint,"enabled":a["enabled"]==true,"quiz":k=="Jev" && a["quiz"]==true,"backtest":k!="Jev" && a["backtest"]==true}),
+        &json!({"id":k,"model":model,"cap":cap,"endpoint":endpoint,"enabled":a["enabled"]==true,"conversation":k=="OpenRouter" && a["conversation"]==true,"quiz":k=="Jev" && a["quiz"]==true,"backtest":k!="Jev" && a["backtest"]==true}),
     )?;
     Ok(())
 }
@@ -288,6 +288,31 @@ fn send_text(s: &Store, p: &Value, sys: &str, input: &str, job: &str, items: usi
         "route",
         &json!({"id":id(),"date":now(),"job":job,"provider":k,"model":model,"items":items}),
     )?;
+    Ok(answer)
+}
+pub fn conversation(
+    s: &Store,
+    p: &Value,
+    system: &str,
+    input: &Value,
+    sink: &mut dyn FnMut(&str),
+) -> Res<String> {
+    let current = s.doc("provider", "OpenRouter")?;
+    if current != *p || p["conversation"] != true {
+        return Err("OpenRouter conversation access changed.".into());
+    }
+    let input = crate::plan::clean(input)?;
+    let cred = credential(s, "OpenRouter")?;
+    let key = cred["key"].as_str().ok_or("Reconnect OpenRouter.")?;
+    let mut budget = p.clone();
+    budget["enabled"] = json!(true);
+    reserve(s, &budget)?;
+    let response=http().post("https://openrouter.ai/api/v1/chat/completions")
+        .set("Authorization",&format!("Bearer {key}"))
+        .send_json(json!({"model":p["model"],"stream":true,"max_tokens":650,"messages":[{"role":"system","content":system},{"role":"user","content":input.to_string()}]}))
+        .map_err(|_|"OpenRouter could not complete this request. Check the connection in Settings.")?;
+    let answer = crate::models::consume_chat(response.into_reader(), false, 650, sink)?;
+    s.put("route",&json!({"id":id(),"date":now(),"job":"conversation","provider":"OpenRouter","model":p["model"],"items":1}))?;
     Ok(answer)
 }
 pub fn backtest_provider(s: &Store) -> Res<Option<Value>> {

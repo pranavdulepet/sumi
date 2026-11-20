@@ -117,6 +117,8 @@ impl Store {
         conn.execute_batch("PRAGMA journal_mode=WAL;PRAGMA foreign_keys=ON;PRAGMA secure_delete=ON;
     CREATE VIRTUAL TABLE IF NOT EXISTS vectors USING vec0(moment_id text primary key, feature float[192]);
     CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY,v TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS imported_messages(id TEXT PRIMARY KEY,source TEXT NOT NULL,stamp TEXT NOT NULL,role TEXT NOT NULL,body TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS imported_source ON imported_messages(source);
     CREATE TABLE IF NOT EXISTS moments(id TEXT PRIMARY KEY,source TEXT NOT NULL,stamp TEXT NOT NULL,situation TEXT NOT NULL,action TEXT NOT NULL,split TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS moments_pair ON moments(situation,action,split);
     CREATE INDEX IF NOT EXISTS moments_split ON moments(split,stamp);

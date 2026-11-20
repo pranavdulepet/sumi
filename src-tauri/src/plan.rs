@@ -25,7 +25,7 @@ pub fn cloud_usable(row: &Value) -> bool {
             .is_some_and(|items| items.iter().any(private_source))
 }
 
-fn clean(value: &Value) -> Res<Value> {
+pub(crate) fn clean(value: &Value) -> Res<Value> {
     match value {
         Value::String(text) if !text.is_empty() => {
             if !crate::local::sensitive(text) {
@@ -64,8 +64,20 @@ pub fn think(
     limit: u32,
     schema: Option<&Value>,
 ) -> Res<String> {
+    think_with(s, model, job, system, input, limit, schema, None)
+}
+pub fn think_with(
+    s: &Store,
+    model: &Value,
+    job: &str,
+    system: &str,
+    input: &Value,
+    limit: u32,
+    schema: Option<&Value>,
+    sink: Option<&mut dyn FnMut(&str)>,
+) -> Res<String> {
     if !selected(model) {
-        return crate::models::infer_with(model, system, &input.to_string(), limit, schema);
+        return crate::models::infer_reply(model, system, &input.to_string(), limit, schema, sink);
     }
     let connected = s.get("model")?;
     if connected != *model
@@ -79,7 +91,7 @@ pub fn think(
     let name = model["name"].as_str().ok_or("Connect ChatGPT again.")?;
     let (api, token) = session(s)?;
     reserve(s)?;
-    let answer = complete(
+    let answer = complete_with(
         &api,
         &token,
         name,
@@ -87,6 +99,7 @@ pub fn think(
         &input.to_string(),
         limit,
         schema,
+        sink,
     )?;
     s.put(
         "route",
@@ -173,6 +186,18 @@ pub(crate) fn complete(
     limit: u32,
     schema: Option<&Value>,
 ) -> Res<String> {
+    complete_with(api, token, model, system, input, limit, schema, None)
+}
+pub(crate) fn complete_with(
+    api: &str,
+    token: &str,
+    model: &str,
+    system: &str,
+    input: &str,
+    limit: u32,
+    schema: Option<&Value>,
+    sink: Option<&mut dyn FnMut(&str)>,
+) -> Res<String> {
     // Plan usage rejects max_output_tokens. Give the model a length instruction
     // and independently bound the output our client accepts.
     let mut body = json!({"model":model,"instructions":format!("{system}\nKeep your answer within {limit} tokens."),
@@ -186,10 +211,18 @@ pub(crate) fn complete(
         .set("Authorization", &format!("Bearer {token}"))
         .send_json(body)
         .map_err(failure)?;
-    consume(response.into_reader(), (limit as usize * 12).max(256))
+    consume_with(response.into_reader(), (limit as usize * 12).max(256), sink)
 }
 
+#[cfg(test)]
 fn consume(reader: impl Read, max: usize) -> Res<String> {
+    consume_with(reader, max, None)
+}
+fn consume_with(
+    reader: impl Read,
+    max: usize,
+    mut sink: Option<&mut dyn FnMut(&str)>,
+) -> Res<String> {
     let mut answer = String::new();
     // Include headroom for lifecycle events and a repeated copy of the final output.
     let stream = BufReader::new(reader.take(2 * 1024 * 1024));
@@ -208,9 +241,13 @@ fn consume(reader: impl Read, max: usize) -> Res<String> {
                 .map_err(|_| "ChatGPT returned an unreadable reply.")?;
             match event["type"].as_str() {
                 Some("response.output_text.delta") => {
-                    answer.push_str(event["delta"].as_str().unwrap_or(""));
+                    let delta = event["delta"].as_str().unwrap_or("");
+                    answer.push_str(delta);
                     if answer.len() > max {
                         return Err("The reply was too long for this part of the notebook.".into());
+                    }
+                    if let Some(f) = sink.as_mut() {
+                        f(delta)
                     }
                 }
                 Some("response.completed") if !answer.trim().is_empty() => {
