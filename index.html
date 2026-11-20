@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sumi — a personal conversation on your Mac</title>
+    <style>
+      @font-face {
+        font-family: Mincho;
+        src: url('shippori.woff2');
+      }
+      @font-face {
+        font-family: Zen;
+        src: url('zen.woff2');
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        background: light-dark(#f4efe6, #171513);
+        color: light-dark(#1f1c1a, #e8e1d5);
+        font:
+          17px Zen,
+          sans-serif;
+      }
+      body::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        background: url('paper.png') repeat;
+        opacity: 0.18;
+        pointer-events: none;
+      }
+      canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+        cursor: crosshair;
+      }
+      main {
+        position: relative;
+        min-height: 100svh;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        pointer-events: none;
+        padding: 30px;
+        text-align: center;
+      }
+      h1 {
+        font:
+          400 clamp(65px, 11vw, 125px)/1 Mincho,
+          Georgia,
+          serif;
+        letter-spacing: -0.08em;
+        margin: 0;
+      }
+      p {
+        margin: 28px 0 34px;
+      }
+      a {
+        pointer-events: auto;
+        display: block;
+        color: inherit;
+        text-decoration: none;
+        border-bottom: 1px solid;
+        padding: 5px;
+        font-size: 15px;
+      }
+      small {
+        position: absolute;
+        bottom: 25px;
+        font-size: 12px;
+        letter-spacing: 0.09em;
+        opacity: 0.7;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas aria-label="Draw with ink on the paper"></canvas>
+    <main>
+      <h1>Sumi</h1>
+      <p>An everyday conversation that remembers what matters to you.</p>
+      <a href="https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.8/Sumi-1.0.8-macOS.zip" download>Download for Mac ↓</a
+      ><small>Apple Silicon · macOS 14 or later</small>
+    </main>
+    <script>
+      if (location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(location.hostname)) {
+        document.querySelector('a[download]').href = 'Sumi-macOS.zip';
+      }
+      const canvas = document.querySelector('canvas');
+      const ink = canvas.getContext('2d');
+      const dark = matchMedia('(prefers-color-scheme: dark)');
+      const still = matchMedia('(prefers-reduced-motion: reduce)');
+      const strokes = [];
+      let active, pointer, frame;
+
+      function paint(from, to, spread) {
+        ink.beginPath();
+        ink.moveTo(from.x, from.y);
+        ink.lineTo(to.x + 0.01, to.y + 0.01);
+        ink.lineCap = 'round';
+        ink.strokeStyle = dark.matches ? '#e8e1d5' : '#28231d';
+        ink.lineWidth = (from.w + to.w) / 2 + spread;
+        ink.globalAlpha = spread ? 0.09 : 0.85;
+        ink.stroke();
+      }
+      function render(time) {
+        ink.clearRect(0, 0, innerWidth, innerHeight);
+        let wet = false;
+        for (const stroke of strokes) {
+          const age = still.matches ? 1 : Math.min(1, (time - stroke.at) / 650);
+          const bleed = 0.2 + 2.2 * Math.max(0, age);
+          wet ||= age < 1;
+          stroke.points.forEach((point, i) => {
+            const previous = stroke.points[Math.max(0, i - 1)];
+            paint(previous, point, bleed);
+            paint(previous, point, 0);
+          });
+        }
+        frame = wet ? requestAnimationFrame(render) : null;
+      }
+      function schedule() {
+        if (!frame) frame = requestAnimationFrame(render);
+      }
+      function resize() {
+        const scale = Math.min(devicePixelRatio, 3);
+        canvas.width = Math.round(innerWidth * scale);
+        canvas.height = Math.round(innerHeight * scale);
+        ink.setTransform(scale, 0, 0, scale, 0, 0);
+        schedule();
+      }
+      function point(e) {
+        return {x: e.clientX, y: e.clientY, w: 0.8 + 5 * (e.pressure || 0.45)};
+      }
+      canvas.onpointerdown = e => {
+        if (!e.isPrimary || e.button !== 0) return;
+        pointer = e.pointerId;
+        canvas.setPointerCapture(pointer);
+        active = {at: performance.now(), points: [point(e)]};
+        strokes.push(active);
+        schedule();
+      };
+      canvas.onpointermove = e => {
+        if (!active || e.pointerId !== pointer) return;
+        active.points.push(point(e));
+        active.at = performance.now();
+        schedule();
+      };
+      canvas.onlostpointercapture = () => { active = null; };
+      dark.addEventListener('change', schedule);
+      still.addEventListener('change', schedule);
+      addEventListener('resize', resize);
+      resize();
+    </script>
+  </body>
+</html>
