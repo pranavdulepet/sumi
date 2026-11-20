@@ -1,6 +1,34 @@
 # Sumi requirements review and acceptance record
 
-## The product decision
+## Combined PRD verification · November 20, 2026
+
+The everyday conversation is the entry point. The original notebook’s evidence, local files, prediction engine and scoped agent access carry forward. A user can begin with one correction and use it on another sheet before importing anything.
+
+| User outcome | Evidence |
+| --- | --- |
+| Ask once, get a useful answer | Browser tests cover incremental answer delivery, a calendar calculation, splitting a dinner bill, skill selection and returning to a saved sheet. Local Ollama and the bundled llama.cpp runtime both ran real inference. |
+| Follow up about a file | A workshop schedule informed two successive questions. The app reads PDFs and documents locally. Native tests cover spreadsheet cells, photo preparation, excerpt selection and export. A separate provider-contract test covers image generation and its consent and budget rules. |
+| Correct a memory and see it used | A project correction appeared on a fresh sheet. Tests also cover dated supersession, retiring a preference, working from older notebooks, sheet privacy and reading an imported opening message. |
+| Get a weekend recommendation | A live end-to-end run used an interest from another sheet, showed its public search query and returned the MFA Boston’s November 21 block-printing event with a venue link. |
+| Learn without model training | The idle scheduler compares candidate memories against later human replies. Tests cover both sides of the scoring gate, dated evidence, private-sheet exclusions and reusable methods. |
+| Keep and move a notebook | SQLCipher, Markdown projections, scoped MCP access, key storage, portable export and confirmation before moving a notebook to Trash have separate checks. The downloadable Apple Silicon app is unpacked and its code signature is verified during release. |
+| Get set up on local inference | The browser stopped a real publisher transfer and resumed it. After verifying the complete GGUF, the bundled Gemma 4 12B runtime answered a sealed decision without an external model server. |
+
+The final release build passed 53 standard Rust tests, 15 native integration tests and all 16 Playwright browser scenarios. The Mac archive passed checksum, extraction and strict recursive signature verification.
+
+The ten captioned films show the conversation flows with invented example notebooks. The hosted-account and metered-image paths were exercised against local protocol fixtures. Real account entitlement, plan quotas, and paid generation remain unverified. No personal archive or paid inference was used. [Watch the walkthroughs](walkthroughs.md)
+
+The ChatGPT plan integration accepts image inputs on eligible models. OpenAI lists image generation among its unsupported plan tools, so drawing a new picture uses a separately connected OpenRouter image model with explicit per-image permission. [OpenAI’s preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+
+### Acceptance that takes real use
+
+The second PRD asks the builder to use Sumi in place of another assistant for two weeks and see fewer clarification turns. The notebook records active days and a clarification proxy. A scripted session cannot establish that the builder switched apps, found the answers useful, or needed less explanation over time. The original PRD’s month-long calibration, energy and interruption targets also need representative use. This Mac has no Developer ID signing identity. The public review package uses an ad-hoc signature and has no Apple notarization ticket.
+
+## Original notebook review
+
+The following records describe the earlier notebook build and its test conditions. Current distribution and conversation behavior are documented above.
+
+### The original product decision
 
 Keep one question at the center of the experience. Can Sumi anticipate a choice well enough to save you work, while leaving the decision yours? On the Desk, a sealed guess commits Sumi to an answer before you decide. The Mirror counts its misses. On the Scroll, you own the sentence that other agents may use. The Seal makes sharing and delegation separate permissions.
 

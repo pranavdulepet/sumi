@@ -1,27 +1,27 @@
 # Sumi walkthroughs
 
-These captioned recordings use the Sumi interface and Rust backend with temporary, synthetic notebooks. The demo runs in Chrome through the local test bridge. The model is the installed Ollama llama3.2:3b. The change-of-mind example starts with three prepared observations, and the morning example advances the clock. No personal conversations or paid services appear.
+These ten captioned recordings use the app interface in Chrome connected to Sumi’s Rust backend, an installed local model and temporary example notebooks. The weekend lookup uses live public listings. Each movie follows one task from the question through the result.
 
-[Download all ten with an offline video player](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/Sumi-walkthroughs.zip). Unzip the folder and open `index.html`, or use the individual MP4 links below.
+[Download the offline player and all ten videos](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/Sumi-conversation-walkthroughs.zip). Unzip it and open `index.html`, or choose a recording below.
 
 ## Everyday use
 
-| Recording | Runtime | What you’ll see |
+| Walkthrough | Time | What happens |
 | --- | ---: | --- |
-| [01 · Start a private notebook](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/01-start-a-notebook.mp4) | 0:19 | Draw a seal, skip imports and model setup, then save the first sheet. |
-| [02 · Return to a draft](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/02-return-to-a-draft.mp4) | 0:18 | Write a thought, open a fresh sheet with Option–Space, then recover the original from Sheets. |
-| [03 · Correct a belief](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/03-correct-a-belief.mp4) | 0:16 | Add a writing preference, narrow when it applies, and save the correction in the Scroll. |
-| [04 · Read the Scroll’s history](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/04-read-scroll-history.mp4) | 0:11 | Scrub between two saved versions of a preference and return to its current wording. |
-| [05 · Manage an agent’s access](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/05-manage-agent-access.mp4) | 0:16 | Connect a temporary Claude Code configuration, change which section it can read, then revoke access. |
+| [01 · Choose a weekend class](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/01-choose-a-weekend-class.mp4) | 0:15 | Drop a workshop schedule onto the sheet, ask which class fits, then ask a follow-up about the same file. |
+| [02 · Split dinner fairly](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/02-split-dinner-fairly.mp4) | 0:10 | Split dinner, inspect the calculation, and work out the date for settling up. |
+| [03 · Pack for the pottery studio](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/03-pack-for-the-pottery-studio.mp4) | 0:10 | Ask for a packing checklist and check off an item on the page. |
+| [04 · Write a considerate invitation](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/04-write-a-considerate-invitation.mp4) | 0:15 | Draft an invitation, then ask for a warmer version on the same sheet. |
+| [05 · Return to a thought](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/05-return-to-a-thought.mp4) | 0:11 | Start another sheet and return to an earlier exchange. |
 
 ## Magic moments
 
-| Recording | Runtime | What you’ll see |
+| Walkthrough | Time | What happens |
 | --- | ---: | --- |
-| [06 · See the first reading](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/06-first-reading.mp4) | 0:40 | Import eight invented conversations. Compare real local predictions on the two held-out replies and inspect one example. |
-| [07 · Finish a phrase in your own words](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/07-ghost-ink.mp4) | 0:15 | After two example replies use a phrase, start it again on the Desk, press Tab, and see the acceptance in the Mirror. |
-| [08 · Break a prediction’s seal](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/08-break-a-seal.mp4) | 0:24 | Write a decision, record your choice before revealing the local model’s prediction, and give it a verdict. |
-| [09 · Recognize a change of mind](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/09-change-of-mind.mp4) | 0:17 | Read three dated example misses, revise the belief once, and see the new sentence on the Scroll. |
-| [10 · Answer a waiting morning question](https://github.com/pranavdulepet/sumi/releases/download/notebook-2026-11-19/10-morning-question.mp4) | 0:19 | Advance the example notebook overnight. Answer a real local agent request and return to the previous evening’s draft. |
+| [06 · Teach a standing method](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/06-teach-a-standing-method.mp4) | 0:22 | Give Sumi a standing instruction, revise it, then see the learned method used on a fresh sheet. |
+| [07 · Remember when things changed](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/07-remember-when-things-changed.mp4) | 0:13 | Change a fact and inspect the dates on the earlier and current versions. |
+| [08 · Find an old conversation](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/08-find-an-old-conversation.mp4) | 0:15 | Import a synthetic chat and retrieve a detail from its opening message. |
+| [09 · Find a weekend workshop](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/09-find-a-weekend-workshop.mp4) | 0:25 | Use a remembered interest, review the public query, and follow a dated Boston museum listing. |
+| [10 · Correct what Sumi knows](https://github.com/pranavdulepet/sumi/releases/download/mac-1.0.7/10-correct-what-sumi-knows.mp4) | 0:15 | Correct a project memory and see the replacement used in a new conversation. |
 
-For feedback, open a [GitHub issue](https://github.com/pranavdulepet/sumi/issues) with the recording number, timestamp and what you expected to happen.
+The earlier recordings cover first readings, ghost ink, sealed predictions and agent access. [Earlier notebook walkthroughs](https://github.com/pranavdulepet/sumi/releases/tag/notebook-2026-11-19)

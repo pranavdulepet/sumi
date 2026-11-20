@@ -22,7 +22,7 @@ The UI test uses Google Chrome, an installed Ollama llama3.2:3b model, a tempora
 cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --nocapture --test-threads=1
 ```
 
-To exercise the publisher download in the browser suite, set `SUMI_TEST_MODEL_DOWNLOAD=1`. This optional test downloads the strongest supported tier that fits the available RAM and storage from Hugging Face and removes its temporary notebook and weights afterward.
+To exercise the publisher download in the browser suite, set `SUMI_TEST_MODEL_DOWNLOAD=1`. This optional test downloads the strongest supported tier that fits the available RAM and storage from Hugging Face and removes its temporary notebook and weights afterward. On repeat runs, set `SUMI_TEST_GGUF_PREFIX` to an existing GGUF with the same filename to reuse its leading bytes. The test still interrupts a real transfer, resumes it from the publisher, verifies the full digest and runs an inference.
 
 The source is MIT licensed. Bundled fonts and inference runtime notices are under `licenses/`. See the [verification record](requirements-review.md) for the evidence and outstanding criteria, and [Contributing](../CONTRIBUTING.md) for feedback and code changes.
 

@@ -1,31 +1,33 @@
 # Sumi
 
-Sumi is a conversation app for Apple Silicon Macs. Ask for a weekend plan and it can combine what you’ve told it with current venue listings. The answer links to the venue. A small red mark opens the words that shaped the recommendation, their date, and **Not true anymore**.
+Sumi is a personal conversation app for Apple Silicon Macs. Tell it “My printmaking project is called Orchard.” Later, correct the name to “North Window.” Open a fresh sheet and ask it to draft an invitation. It can use the new name, show you the dated memory behind the answer, and let you change it again.
 
-[Download the latest Mac release](https://github.com/pranavdulepet/sumi/releases/latest) · [Watch ten walkthroughs](docs/walkthroughs.md) · [Build this branch](docs/development.md)
+[Download Sumi for Mac](https://github.com/pranavdulepet/sumi/releases/tag/mac-1.0.7) · [Watch ten short walkthroughs](docs/walkthroughs.md) · [Build from source](docs/development.md)
 
 ## Start a conversation
 
-On macOS 14 or later, unzip Sumi and move it to Applications. The app uses an ad-hoc signature. macOS may ask for approval to open it or to access an existing notebook’s Keychain item after an upgrade.
+On macOS 14 or later, unzip Sumi and move it to Applications. This release is ad-hoc signed. macOS may ask for approval to open it or access an existing notebook’s Keychain item after an upgrade.
 
-Choose **Continue with ChatGPT** to connect an eligible plan, or **Think on this Mac instead** to use a local model. Draw a stroke for your seal, then write on the open sheet. Return sends. Shift-Return adds a line. **Sheets** (⌘O) reopens a conversation or starts a new one. Importing earlier conversations is optional.
+Choose **Continue with ChatGPT** to connect an eligible plan, or **Think on this Mac instead** to use a local model. Draw your seal and write on the sheet. Return sends, Shift-Return adds a line, and **Sheets** (⌘O) reopens a conversation. You can import old chats after your first answer or from Settings.
 
-Try telling Sumi “I live in Boston. On weekends I love hands-on printmaking workshops.” Open a fresh sheet and ask “What should I do this weekend?” Sumi resolves the weekend on your Mac, shows the public search query, and uses Exa’s keyless search endpoint when you click **Search the web**. If it needs a city, it asks. Sumi reads venue pages, checks for the requested city and dates, and screens out listings marked sold out, cancelled or past their registration deadline. A dated excerpt accompanies the recommendation when available. Check **Automatically look up weekend listings** in Settings to skip the query preview for future weekend plans.
+Drop in a class schedule and ask “Which class can I take after work?” Follow up on the same sheet without attaching it again. Sumi reads PDFs, documents, images and spreadsheets on the Mac. Answers can include tables, charts, diagrams and checklists you can tick. Expand **Behind this reply** to inspect the model and tools.
 
-## Memory you can inspect
+For a weekend plan, tell Sumi your city and what you enjoy, then ask “What should I do this weekend?” Sumi works out the dates and previews the public query. **Search the web** checks current listings through Exa. When Sumi finds a match, the answer links to the venue. Settings can remember your permission for weekend listings.
 
-**What Sumi knows** (⌘K) shows dated notes, approved entries, earlier memories and saved methods. Sumi recognizes explicit statements such as a home city, weekend preference, or “My … is …” fact. A later statement about the same subject can supersede one you made earlier. A preference you retire disappears from current retrieval. The earlier statement and the answer that used it remain readable. **Correct this reply** lets you review Sumi’s interpretation and try the correction on the next decision.
+## What Sumi learns
 
-An explicit recurring instruction can become a named skill immediately. Similar requests on three separate days, or positive feedback on a multi-step result, can lead to a skill during idle time. New skills have a portable `SKILL.md`. Earlier Markdown skills remain readable. An idle pass archives learned methods after 60 days without use.
+A red mark beside an answer opens the memory and its date. **Not true anymore** retires it. **What Sumi knows** (⌘K) collects current and earlier memories, people, projects and saved ways of working. **Correct this reply** lets you inspect a correction and try it on your next decision.
 
-While the Mac is idle and plugged in, Sumi can test a compact set of recurring memories against later conversation turns. It compares the local model’s predictions with and without the proposed change. A lower aggregate score keeps the previous core. Direct corrections take effect immediately. A new notebook needs enough distinct days and held-out follow-ups before a core is promoted.
+A standing instruction can become a named skill straight away. Similar requests on three distinct days, or positive feedback after a multi-step task, can lead to a skill during idle time. Skills are portable Markdown files. Sumi can revise them with you and archive learned skills after 60 days without use.
 
-## Models, search and files
+While the Mac is idle and plugged in, Sumi can compare a proposed memory with the existing one by predicting later replies. A worse aggregate score keeps the existing memory. Direct corrections take effect immediately. Settings shows the local measurements and how many observations they are based on.
 
-Sumi can select a calculator, a civil-date calculation, earlier passages, a saved skill or web search. The conversation renders lists, tables and bar charts. **Behind this reply** shows the model and tools. **Settings** (⌘,) manages intelligence, agent access, readings and chat imports.
+## Models and privacy
 
-In ChatGPT mode, OpenAI receives the passages needed for the request. Sumi can use a local model for selection and quick replies, a fast eligible plan model when available, and the main plan model for deeper work. A private sheet requires local inference. Local mode keeps inference on the Mac. An approved web search sends its public query to Exa. An explicitly offline sheet disables search. Other provider connections support specific background jobs.
+Sumi routes each message across the models you connect. In ChatGPT mode, OpenAI receives the passages needed to respond. A connected local model can handle quick questions and private sheets. Local mode keeps model inference on the Mac. Without a local model, a sensitive question can offer a one-message preview for explicit sharing. Private sheets stay local. Attached file excerpts have their own sharing control.
 
-Your notebook lives in `~/Sumi` by default. Read conversations in `desk/conversations/`, dated notes in `desk/memories.md`, the promoted core in `desk/core.md`, and skills in `scroll/skills/`. These Markdown files are readable by anyone with access to the folder. The encrypted database in `.sumi/` holds the working state. macOS Keychain holds its key and optional provider credentials. Keep your login Keychain with your notebook backup.
+Settings can connect an OpenRouter model for deeper answers or image generation with a request cap. Drawing an image asks for permission to send its prompt. Web search sends the displayed query. You can inspect and revoke each agent’s access to approved notebook entries.
 
-Sumi is MIT licensed. Bundled art and runtime notices are under [licenses](licenses/). See [Contributing](CONTRIBUTING.md) for feedback and code changes.
+Your notebook lives in `~/Sumi` by default. Conversations, dated memories and skills have readable Markdown copies. Anyone with access to those files can read them. The working database uses SQLCipher. Keys and optional provider credentials live in macOS Keychain. Settings can export a portable archive or move the notebook to the Trash. Keep the login Keychain with a complete notebook backup.
+
+Sumi is MIT licensed. [Third-party notices](licenses/) · [Contributing](CONTRIBUTING.md) · [Requirements and verification](docs/requirements-review.md)
